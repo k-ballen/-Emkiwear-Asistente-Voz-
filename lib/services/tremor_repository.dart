@@ -11,20 +11,31 @@ class TremorRepository {
   static const String sampleCharUuid = "7A9B0002-2D4E-4E6F-8A1B-0C2D3E4F5061";
   static const String statusCharUuid = "7A9B0003-2D4E-4E6F-8A1B-0C2D3E4F5061";
   static const String cmdCharUuid = "7A9B0004-2D4E-4E6F-8A1B-0C2D3E4F5061";
-  static const String summaryCharUuid = "7A9B0005-2D4E-4E6F-8A1B-0C2D3E4F5061";
+  static const String extCharUuid = "7A9B0005-2D4E-4E6F-8A1B-0C2D3E4F5061";
+  static const String summaryCharUuid = "7A9B0006-2D4E-4E6F-8A1B-0C2D3E4F5061";
   static const String rawCharUuid = "7A9B0007-2D4E-4E6F-8A1B-0C2D3E4F5061";
   static const String rawFifoCharUuid = "7A9B0008-2D4E-4E6F-8A1B-0C2D3E4F5061";
+  static const String diagCharUuid = "7A9B0009-2D4E-4E6F-8A1B-0C2D3E4F5061";
+  static const String sevCharUuid = "7A9B000A-2D4E-4E6F-8A1B-0C2D3E4F5061";
 
   final StreamController<TremorSample> _sampleController = StreamController<TremorSample>.broadcast();
   final StreamController<TremorStatus> _statusController = StreamController<TremorStatus>.broadcast();
+  final StreamController<TremorExt> _extController = StreamController<TremorExt>.broadcast();
+  final StreamController<TremorSev> _sevController = StreamController<TremorSev>.broadcast();
+  final StreamController<TremorDiag> _diagController = StreamController<TremorDiag>.broadcast();
   final StreamController<TremorSummary> _summaryController = StreamController<TremorSummary>.broadcast();
   final StreamController<RawImuSample> _rawController = StreamController<RawImuSample>.broadcast();
+  final StreamController<RawAxisData> _rawAxisController = StreamController<RawAxisData>.broadcast();
   final StreamController<RawFifoPacket> _rawFifoController = StreamController<RawFifoPacket>.broadcast();
 
   Stream<TremorSample> get sampleStream => _sampleController.stream;
   Stream<TremorStatus> get statusStream => _statusController.stream;
+  Stream<TremorExt> get extStream => _extController.stream;
+  Stream<TremorSev> get sevStream => _sevController.stream;
+  Stream<TremorDiag> get diagStream => _diagController.stream;
   Stream<TremorSummary> get summaryStream => _summaryController.stream;
   Stream<RawImuSample> get rawStream => _rawController.stream;
+  Stream<RawAxisData> get rawAxisStream => _rawAxisController.stream;
   Stream<RawFifoPacket> get rawFifoStream => _rawFifoController.stream;
 
   BluetoothCharacteristic? _cmdChar;
@@ -46,8 +57,8 @@ class TremorRepository {
     _sampleController.add(sample);
   }
 
-  void decodeStatus(List<int> value) {
-    if (value.length < 14) return;
+  TremorStatus? decodeStatus(List<int> value) {
+    if (value.length != 14) return null;
 
     final data = ByteData.sublistView(Uint8List.fromList(value));
     final flags = data.getUint8(4);
@@ -56,6 +67,9 @@ class TremorRepository {
       tMs: data.getUint32(0, Endian.little),
       tremorPresent: (flags & 0x01) != 0,
       freqStable: (flags & 0x02) != 0,
+      detected: (flags & 0x04) != 0,
+      isAnalyzing: (flags & 0x40) != 0,
+      tremorClass: TremorClassExtension.fromInt((flags >> 3) & 0x07),
       domFreq: data.getUint8(5) / 10.0,
       tremorAmp: data.getInt16(6, Endian.little) / 10.0,
       movement: data.getInt16(8, Endian.little) / 10.0,
@@ -65,10 +79,72 @@ class TremorRepository {
     );
     
     _statusController.add(status);
+    return status;
+  }
+
+  TremorExt? decodeExt(List<int> value) {
+    if (value.length != 12) return null;
+
+    final data = ByteData.sublistView(Uint8List.fromList(value));
+    final flags2 = data.getUint8(10);
+    final categoryInt = data.getUint8(11);
+
+    final ext = TremorExt(
+      tMs: data.getUint32(0, Endian.little),
+      accelAmpMg: data.getUint16(4, Endian.little),
+      ratio: data.getUint16(6, Endian.little) / 100.0,
+      angDeg: data.getUint16(8, Endian.little) / 100.0,
+      flags2: flags2,
+      isRotational: (flags2 & 0x01) != 0,
+      tremorClass: TremorClassExtension.fromInt(categoryInt),
+    );
+
+    _extController.add(ext);
+    return ext;
+  }
+
+  TremorSev? decodeSev(List<int> value) {
+    if (value.length != 8) return null;
+
+    final data = ByteData.sublistView(Uint8List.fromList(value));
+
+    final sev = TremorSev(
+      tMs: data.getUint32(0, Endian.little),
+      thetaDeg: data.getUint16(4, Endian.little) / 100.0,
+      desplazCm: data.getUint16(6, Endian.little) / 10.0,
+    );
+
+    _sevController.add(sev);
+    return sev;
+  }
+
+  TremorDiag? decodeDiag(List<int> value) {
+    if (value.length != 16) return null;
+
+    final data = ByteData.sublistView(Uint8List.fromList(value));
+    final flags = data.getUint8(7);
+
+    final diag = TremorDiag(
+      tMs: data.getUint32(0, Endian.little),
+      ruta: data.getUint8(4),
+      votos: data.getUint8(5),
+      ejesActivos: data.getUint8(6),
+      flags: flags,
+      detectado: (flags & 0x01) != 0,
+      rotacional: (flags & 0x02) != 0,
+      compuerta: (flags & 0x04) != 0,
+      lin: data.getUint16(8, Endian.little) / 1000.0,
+      prel3Pct: data.getUint8(10),
+      vol110Pct: data.getUint8(11),
+      sigmaMin: data.getUint16(12, Endian.little) / 100.0,
+      rmsPc: data.getUint16(14, Endian.little) / 10.0,
+    );
+
+    _diagController.add(diag);
+    return diag;
   }
 
   void decodeSummary(List<int> value, String userId) {
-    // Estructura sugerida de 34 bytes para el histórico
     if (value.length < 34) return;
     final data = ByteData.sublistView(Uint8List.fromList(value));
     
@@ -80,7 +156,7 @@ class TremorRepository {
     final dateStr = DateFormat('yyyy-MM-dd').format(startTime);
     final hour = startTime.hour;
     final minute = (startTime.minute ~/ 5) * 5;
-    
+
     final summary = TremorSummary(
       id: "${userId}_${dateStr}_${hour}_${minute}",
       startTime: startTime,
@@ -91,14 +167,16 @@ class TremorRepository {
       tremorSamples: data.getUint32(18, Endian.little),
       avgDomFreq: data.getUint8(22) / 10.0,
       severityCounts: {
-        "LEVE": data.getUint16(23, Endian.little),
-        "MODERADO": data.getUint16(25, Endian.little),
-        "GRAVE": data.getUint16(27, Endian.little),
-        "VOLUNTARIO": data.getUint16(29, Endian.little),
+        "SIN_TEMBLOR": data.getUint16(23, Endian.little),
+        "LEVE": data.getUint16(25, Endian.little),
+        "MODERADO": data.getUint16(27, Endian.little),
+        "GRAVE": data.getUint16(29, Endian.little),
+        "VOLUNTARIO": data.getUint16(31, Endian.little),
       },
       date: dateStr,
       hour: hour,
       minute: minute,
+      taxonomyVersion: 2,
     );
     
     _summaryController.add(summary);
@@ -107,16 +185,28 @@ class TremorRepository {
   void decodeRawImu(List<int> value) {
     if (value.length < 16) return;
     final b = ByteData.sublistView(Uint8List.fromList(value));
-    
-    final sample = RawImuSample(
+
+    final rawAxis = RawAxisData(
       tMs: b.getUint32(0, Endian.little),
+      axG: b.getInt16(4, Endian.little) / 1000.0,
+      ayG: b.getInt16(6, Endian.little) / 1000.0,
+      azG: b.getInt16(8, Endian.little) / 1000.0,
+      gxDps: b.getInt16(10, Endian.little) / 10.0,
+      gyDps: b.getInt16(12, Endian.little) / 10.0,
+      gzDps: b.getInt16(14, Endian.little) / 10.0,
+    );
+
+    _rawAxisController.add(rawAxis);
+
+    final sample = RawImuSample(
+      tMs: rawAxis.tMs,
       epochMs: DateTime.now().millisecondsSinceEpoch,
-      ax: b.getInt16(4, Endian.little) / 1000.0,
-      ay: b.getInt16(6, Endian.little) / 1000.0,
-      az: b.getInt16(8, Endian.little) / 1000.0,
-      gx: b.getInt16(10, Endian.little) / 10.0,
-      gy: b.getInt16(12, Endian.little) / 10.0,
-      gz: b.getInt16(14, Endian.little) / 10.0,
+      ax: rawAxis.axG,
+      ay: rawAxis.ayG,
+      az: rawAxis.azG,
+      gx: rawAxis.gxDps,
+      gy: rawAxis.gyDps,
+      gz: rawAxis.gzDps,
     );
     
     _rawController.add(sample);
@@ -198,5 +288,12 @@ class TremorRepository {
   void dispose() {
     _sampleController.close();
     _statusController.close();
+    _extController.close();
+    _sevController.close();
+    _diagController.close();
+    _summaryController.close();
+    _rawController.close();
+    _rawAxisController.close();
+    _rawFifoController.close();
   }
 }

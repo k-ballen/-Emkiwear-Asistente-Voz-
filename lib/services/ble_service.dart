@@ -2,9 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'tremor_repository.dart';
-import 'firestore_raw_service.dart';
 import '../models/device_info.dart';
-import '../models/ble_device_data.dart';
 
 class BleService {
   final TremorRepository repository;
@@ -12,6 +10,9 @@ class BleService {
   StreamSubscription? _connectionSubscription;
   StreamSubscription? _lastSampleSub;
   StreamSubscription? _lastStatusSub;
+  StreamSubscription? _lastExtSub;
+  StreamSubscription? _lastSevSub;
+  StreamSubscription? _lastDiagSub;
   StreamSubscription? _lastRawSub;
   StreamSubscription? _lastRawFifoSub;
 
@@ -28,12 +29,10 @@ class BleService {
     _isConnecting = true;
     print("BLE: Iniciando escaneo...");
     
-    // Detener cualquier escaneo previo
     try {
       await FlutterBluePlus.stopScan();
     } catch (_) {}
 
-    // Configurar escaneo
     var subscription = FlutterBluePlus.onScanResults.listen((results) async {
       for (ScanResult r in results) {
         String name = r.device.platformName;
@@ -58,7 +57,6 @@ class BleService {
       _isConnecting = false;
     }
     
-    // Cleanup scan sub after timeout
     Future.delayed(const Duration(seconds: 16), () {
       subscription.cancel();
       _isConnecting = false;
@@ -71,7 +69,6 @@ class BleService {
       await device.connect(autoConnect: false);
       _connectedDevice = device;
 
-      // Solicitar MTU alto inmediatamente
       try {
         await device.requestMtu(512);
       } catch (e) {
@@ -102,6 +99,23 @@ class BleService {
             } else if (uuid == TremorRepository.statusCharUuid) {
               await char.setNotifyValue(true);
               _lastStatusSub = char.onValueReceived.listen((value) => repository.decodeStatus(value));
+            } else if (uuid == TremorRepository.extCharUuid) {
+              await char.setNotifyValue(true);
+              _lastExtSub = char.onValueReceived.listen((value) => repository.decodeExt(value));
+            } else if (uuid == TremorRepository.sevCharUuid) {
+              try {
+                await char.setNotifyValue(true);
+                _lastSevSub = char.onValueReceived.listen((value) => repository.decodeSev(value));
+              } catch (e) {
+                print("BLE: Opcional SEV no disponible: $e");
+              }
+            } else if (uuid == TremorRepository.diagCharUuid) {
+              try {
+                await char.setNotifyValue(true);
+                _lastDiagSub = char.onValueReceived.listen((value) => repository.decodeDiag(value));
+              } catch (e) {
+                print("BLE: Opcional DIAG no disponible: $e");
+              }
             } else if (uuid == TremorRepository.summaryCharUuid) {
               await char.setNotifyValue(true);
               char.onValueReceived.listen((value) async {
@@ -162,6 +176,9 @@ class BleService {
     _connectionSubscription?.cancel();
     _lastSampleSub?.cancel();
     _lastStatusSub?.cancel();
+    _lastExtSub?.cancel();
+    _lastSevSub?.cancel();
+    _lastDiagSub?.cancel();
     _lastRawSub?.cancel();
     _lastRawFifoSub?.cancel();
     _connectedDevice = null;

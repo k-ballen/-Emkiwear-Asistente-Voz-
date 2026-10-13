@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -10,42 +11,118 @@ import 'tremor_repository.dart';
 import 'firebase_service.dart';
 import 'firestore_raw_service.dart';
 import 'csv_capture_service.dart';
+import 'tremor_filter.dart';
 import '../models/device_info.dart';
 
 class HourAccumulator {
-// ... (mismo contenido de HourAccumulator)
   double sumIntensity = 0.0;
   double maxIntensity = 0.0;
+  double sumAngleDeg = 0.0;
+  double maxAngleDeg = 0.0;
+  int angleCount = 0;
   int totalSamples = 0;
   int tremorSamples = 0;
   double sumDomFreq = 0.0;
   int domFreqCount = 0;
-  Map<String, int> severityCounts = {"LEVE": 0, "MODERADO": 0, "GRAVE": 0, "VOLUNTARIO": 0};
+  Map<String, int> severityCounts = {
+    "SIN_TEMBLOR": 0,
+    "LEVE": 0,
+    "MODERADO": 0,
+    "GRAVE": 0,
+    "VOLUNTARIO": 0
+  };
   DateTime startTime;
 
   HourAccumulator(this.startTime);
 
   Map<String, dynamic> toJson() => {
-    'sumIntensity': sumIntensity,
-    'maxIntensity': maxIntensity,
-    'totalSamples': totalSamples,
-    'tremorSamples': tremorSamples,
-    'sumDomFreq': sumDomFreq,
-    'domFreqCount': domFreqCount,
-    'severityCounts': severityCounts,
-    'startTime': startTime.millisecondsSinceEpoch,
-  };
+        'sumIntensity': sumIntensity,
+        'maxIntensity': maxIntensity,
+        'sumAngleDeg': sumAngleDeg,
+        'maxAngleDeg': maxAngleDeg,
+        'angleCount': angleCount,
+        'totalSamples': totalSamples,
+        'tremorSamples': tremorSamples,
+        'sumDomFreq': sumDomFreq,
+        'domFreqCount': domFreqCount,
+        'severityCounts': severityCounts,
+        'startTime': startTime.millisecondsSinceEpoch,
+      };
 
   static HourAccumulator fromJson(Map<String, dynamic> json) {
-    var acc = HourAccumulator(DateTime.fromMillisecondsSinceEpoch(json['startTime']));
-    acc.sumIntensity = json['sumIntensity'];
-    acc.maxIntensity = json['maxIntensity'];
-    acc.totalSamples = json['totalSamples'];
-    acc.tremorSamples = json['tremorSamples'];
-    acc.sumDomFreq = json['sumDomFreq'];
-    acc.domFreqCount = json['domFreqCount'];
-    acc.severityCounts = Map<String, int>.from(json['severityCounts']);
+    var acc = HourAccumulator(
+        DateTime.fromMillisecondsSinceEpoch(json['startTime']));
+    acc.sumIntensity = (json['sumIntensity'] ?? 0.0).toDouble();
+    acc.maxIntensity = (json['maxIntensity'] ?? 0.0).toDouble();
+    acc.sumAngleDeg = (json['sumAngleDeg'] ?? 0.0).toDouble();
+    acc.maxAngleDeg = (json['maxAngleDeg'] ?? 0.0).toDouble();
+    acc.angleCount = json['angleCount'] ?? 0;
+    acc.totalSamples = json['totalSamples'] ?? 0;
+    acc.tremorSamples = json['tremorSamples'] ?? 0;
+    acc.sumDomFreq = (json['sumDomFreq'] ?? 0.0).toDouble();
+    acc.domFreqCount = json['domFreqCount'] ?? 0;
+    acc.severityCounts = Map<String, int>.from(json['severityCounts'] ?? {});
     return acc;
+  }
+}
+
+class DebugPacketRecord {
+  final int tMs;
+  final String tremorClass;
+  final bool confirmed;
+  final bool detected;
+  final double fHz;
+  final double ampDps;
+  final double movDps;
+  final int bandPct;
+  final int dutyPct;
+  final int episodioS;
+  final int? accelMg;
+  final double? ratio;
+  final double? angDeg;
+  final bool? rotacional;
+  final int? ruta;
+  final int? votos;
+  final int? activos;
+  final bool? compuerta;
+  final double? lin;
+  final int? prel3;
+  final int? vol110;
+  final double? sigmaMin;
+  final double? rmsPc;
+  final bool isIncoherent;
+  final DateTime receivedAt;
+
+  DebugPacketRecord({
+    required this.tMs,
+    required this.tremorClass,
+    required this.confirmed,
+    required this.detected,
+    required this.fHz,
+    required this.ampDps,
+    required this.movDps,
+    required this.bandPct,
+    required this.dutyPct,
+    required this.episodioS,
+    this.accelMg,
+    this.ratio,
+    this.angDeg,
+    this.rotacional,
+    this.ruta,
+    this.votos,
+    this.activos,
+    this.compuerta,
+    this.lin,
+    this.prel3,
+    this.vol110,
+    this.sigmaMin,
+    this.rmsPc,
+    required this.isIncoherent,
+    required this.receivedAt,
+  });
+
+  String toCsvLine() {
+    return '$tMs,$tremorClass,$confirmed,$detected,${fHz.toStringAsFixed(1)},${ampDps.toStringAsFixed(1)},${movDps.toStringAsFixed(1)},$bandPct,$dutyPct,$episodioS,${accelMg ?? ''},${ratio != null ? ratio!.toStringAsFixed(2) : ''},${angDeg != null ? angDeg!.toStringAsFixed(2) : ''},${rotacional ?? ''},${ruta ?? ''},${votos ?? ''},${activos ?? ''},${compuerta ?? ''},${lin != null ? lin!.toStringAsFixed(3) : ''},${prel3 ?? ''},${vol110 ?? ''},${sigmaMin != null ? sigmaMin!.toStringAsFixed(2) : ''},${rmsPc != null ? rmsPc!.toStringAsFixed(1) : ''},$isIncoherent';
   }
 }
 
@@ -55,42 +132,146 @@ class TremorProvider with ChangeNotifier {
   final FirestoreRawService _rawFirestoreService = FirestoreRawService();
   final CsvCaptureService _csvCaptureService = CsvCaptureService();
   late final BleService _bleService;
-  
+
   TremorSample? _lastSample;
   TremorStatus? _lastStatus;
-  BluetoothConnectionState _connectionState = BluetoothConnectionState.disconnected;
+  TremorExt? _lastExt;
+  TremorSev? _lastSev;
+  TremorDiag? _lastDiag;
+  BluetoothConnectionState _connectionState =
+      BluetoothConnectionState.disconnected;
   bool _isStreaming = true;
   bool _isRawUploadEnabled = true;
-  
+
+  // Timeout de datos y tiempo de análisis (bit6)
+  DateTime? _lastStatusTime;
+  DateTime? _analyzingStartTime;
+  bool _isDataTimeout = false;
+  Timer? _timeoutCheckTimer;
+
+  // Historial de muestras de velocidad para gráfica (50 muestras)
   final List<TremorSample> _history = [];
   static const int maxHistory = 50;
 
-  Map<String, HourAccumulator> _buckets = {};
-  DateTime? _lastSampleProcessed;
+  // Línea de tiempo de los últimos 2 minutos (240 paquetes STATUS a ~2Hz)
+  final List<TremorStatus> _timeline = [];
+  static const int maxTimeline = 240;
 
+  // Contadores de Sesión acumulados (0.5 s por STATUS)
+  int _sessionSinTemblorCount = 0;
+  int _sessionLeveCount = 0;
+  int _sessionModeradoCount = 0;
+  int _sessionGraveCount = 0;
+  int _sessionVoluntarioCount = 0;
+
+  // Contador de incoherencias (bit2 == 1 && clase == 4)
+  int _incoherenceCount = 0;
+
+  // Definición de Episodios (Flanco ascendente del bit0 de confirmado)
+  int _episodeCount = 0;
+  bool _prevConfirmed = false;
+
+  // Filtros de Señal por Eje y Búfers (10 s a 50 Hz = 500 puntos)
+  final Tremor3AxisFilter _gyroFilter = Tremor3AxisFilter();
+  final Tremor3AxisFilter _accelFilter = Tremor3AxisFilter();
+  int? _lastRawTMs;
+
+  final List<RawAxisData> _rawAxisBuffer = [];
+  final List<({double x, double y, double z})> _filteredGyroBuffer = [];
+  final List<({double x, double y, double z})> _filteredAccelBuffer = [];
+  static const int maxRawPoints = 500;
+
+  // Búfer de 60 s para exportación de señal RAW (3000 puntos)
+  final List<RawAxisData> _raw60sBuffer = [];
+  static const int maxRaw60s = 3000;
+
+  // Control de refresco de UI para RAW (10-15 fps max = ~66 ms)
+  DateTime _lastRawNotify = DateTime.now();
+  bool _isRawCardVisible = false;
+
+  // Registro de paquetes para pantalla de depuración y exportación CSV
+  final List<DebugPacketRecord> _debugRecords = [];
+  static const int maxDebugRecords = 500;
+
+  Map<String, HourAccumulator> _buckets = {};
   CaptureStatus? _captureStatus;
 
   TremorSample? get lastSample => _lastSample;
   TremorStatus? get lastStatus => _lastStatus;
+  TremorExt? get lastExt => _lastExt;
+  TremorSev? get lastSev => _lastSev;
+  TremorDiag? get lastDiag => _lastDiag;
   BluetoothConnectionState get connectionState => _connectionState;
   bool get isStreaming => _isStreaming;
   bool get isRawUploadEnabled => _isRawUploadEnabled;
+  bool get isDataTimeout => _isDataTimeout;
   List<TremorSample> get history => _history;
+  List<TremorStatus> get timeline => List.unmodifiable(_timeline);
+  List<DebugPacketRecord> get debugRecords => List.unmodifiable(_debugRecords);
   CaptureStatus? get captureStatus => _captureStatus;
   DeviceInfo? get deviceInfo => _bleService.deviceInfo;
+
+  // Acceso a datos RAW
+  List<RawAxisData> get rawAxisBuffer => List.unmodifiable(_rawAxisBuffer);
+  List<({double x, double y, double z})> get filteredGyroBuffer => List.unmodifiable(_filteredGyroBuffer);
+  List<({double x, double y, double z})> get filteredAccelBuffer => List.unmodifiable(_filteredAccelBuffer);
+  bool get isRawCardVisible => _isRawCardVisible;
+
+  // Verificación de Firmware < 2.0.0
+  bool get isFirmwareOutdated {
+    if (deviceInfo == null || deviceInfo!.firmware.isEmpty) return false;
+    final parts = deviceInfo!.firmware.split('.');
+    final major = int.tryParse(parts[0]) ?? 2;
+    return major < 2;
+  }
+
+  // Progreso de análisis (0.0 a 1.0 durante 9s, o -1.0 si es indeterminado tras 9s)
+  double get analyzingProgress {
+    if (_lastStatus == null || _lastStatus!.isAnalyzing) {
+      if (_analyzingStartTime == null) return 0.0;
+      final elapsedMs = DateTime.now().difference(_analyzingStartTime!).inMilliseconds;
+      if (elapsedMs >= 9000) return -1.0;
+      return (elapsedMs / 9000.0).clamp(0.0, 1.0);
+    }
+    return 0.0;
+  }
+
+  // Contadores de sesión
+  int get sessionSinTemblorCount => _sessionSinTemblorCount;
+  int get sessionLeveCount => _sessionLeveCount;
+  int get sessionModeradoCount => _sessionModeradoCount;
+  int get sessionGraveCount => _sessionGraveCount;
+  int get sessionVoluntarioCount => _sessionVoluntarioCount;
+  int get incoherenceCount => _incoherenceCount;
+  int get episodeCount => _episodeCount;
+
+  // Período de estabilización (t_ms < 12000 ms)
+  bool get isStabilizing => _lastStatus != null && _lastStatus!.tMs < 12000;
 
   TremorProvider() {
     _bleService = BleService(_repository);
     _loadBuckets();
-    
-    // Escuchar datos del repositorio
+
+    _timeoutCheckTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      if (_lastStatusTime != null &&
+          DateTime.now().difference(_lastStatusTime!).inSeconds >= 2) {
+        if (!_isDataTimeout) {
+          _isDataTimeout = true;
+          notifyListeners();
+        }
+      } else {
+        if (_isDataTimeout) {
+          _isDataTimeout = false;
+          notifyListeners();
+        }
+      }
+    });
+
     _repository.sampleStream.listen((sample) {
       _lastSample = sample;
       if (_isStreaming) {
         _history.add(sample);
         if (_history.length > maxHistory) _history.removeAt(0);
-        _processSampleForBucket(sample);
-        _checkAutoUpload();
       }
       notifyListeners();
     });
@@ -98,7 +279,111 @@ class TremorProvider with ChangeNotifier {
     _repository.statusStream.listen((status) {
       if (!_isStreaming) return;
       _lastStatus = status;
+      _lastStatusTime = DateTime.now();
+      _isDataTimeout = false;
+
+      if (status.isAnalyzing) {
+        _analyzingStartTime ??= DateTime.now();
+      } else {
+        _analyzingStartTime = null;
+      }
+
+      _timeline.add(status);
+      if (_timeline.length > maxTimeline) _timeline.removeAt(0);
+
+      // // reemplazado: la clase viene del reloj
+      if (!status.isAnalyzing) {
+        switch (status.tremorClass) {
+          case TremorClass.sinTemblor:
+            _sessionSinTemblorCount++;
+            break;
+          case TremorClass.leve:
+            _sessionLeveCount++;
+            break;
+          case TremorClass.moderado:
+            _sessionModeradoCount++;
+            break;
+          case TremorClass.grave:
+            _sessionGraveCount++;
+            break;
+          case TremorClass.voluntario:
+            _sessionVoluntarioCount++;
+            break;
+        }
+
+        // Detección de incoherencias (bit2 == 1 && clase == 4)
+        if (status.detected && status.tremorClass == TremorClass.voluntario) {
+          _incoherenceCount++;
+        }
+
+        // Episodios cuentan solo cuando confirmado == true (bit0)
+        if (status.tremorPresent && !_prevConfirmed) {
+          _episodeCount++;
+        }
+        _prevConfirmed = status.tremorPresent;
+      }
+
+      _recordDebugStatus(status);
+      _processStatusForBucket(status);
+      _checkAutoUpload();
+
       notifyListeners();
+    });
+
+    _repository.extStream.listen((ext) {
+      if (!_isStreaming) return;
+      _lastExt = ext;
+      _recordDebugExt(ext);
+
+      if (_lastStatus != null && !_lastStatus!.isAnalyzing) {
+        _processExtForBucket(ext);
+      }
+
+      notifyListeners();
+    });
+
+    _repository.sevStream.listen((sev) {
+      if (!_isStreaming) return;
+      _lastSev = sev;
+      notifyListeners();
+    });
+
+    _repository.diagStream.listen((diag) {
+      if (!_isStreaming) return;
+      _lastDiag = diag;
+      _recordDebugDiag(diag);
+      notifyListeners();
+    });
+
+    _repository.rawAxisStream.listen((raw) {
+      if (!_isStreaming) return;
+
+      if (_lastRawTMs != null && (raw.tMs - _lastRawTMs!).abs() > 100) {
+        _gyroFilter.reset();
+        _accelFilter.reset();
+      }
+      _lastRawTMs = raw.tMs;
+
+      final filteredG = _gyroFilter.process(x: raw.gxDps, y: raw.gyDps, z: raw.gzDps);
+      final filteredA = _accelFilter.process(x: raw.axG, y: raw.ayG, z: raw.azG);
+
+      _rawAxisBuffer.add(raw);
+      if (_rawAxisBuffer.length > maxRawPoints) _rawAxisBuffer.removeAt(0);
+
+      _filteredGyroBuffer.add(filteredG);
+      if (_filteredGyroBuffer.length > maxRawPoints) _filteredGyroBuffer.removeAt(0);
+
+      _filteredAccelBuffer.add(filteredA);
+      if (_filteredAccelBuffer.length > maxRawPoints) _filteredAccelBuffer.removeAt(0);
+
+      _raw60sBuffer.add(raw);
+      if (_raw60sBuffer.length > maxRaw60s) _raw60sBuffer.removeAt(0);
+
+      final now = DateTime.now();
+      if (now.difference(_lastRawNotify).inMilliseconds >= 66) {
+        _lastRawNotify = now;
+        notifyListeners();
+      }
     });
 
     _repository.summaryStream.listen((summary) {
@@ -110,7 +395,6 @@ class TremorProvider with ChangeNotifier {
       _rawFirestoreService.addSample(sample);
     });
 
-    // RAWFIFO para CSV
     _repository.rawFifoStream.listen((packet) {
       _csvCaptureService.processPacket(packet);
     });
@@ -125,6 +409,20 @@ class TremorProvider with ChangeNotifier {
         _connectionState = event.connectionState;
         if (_connectionState == BluetoothConnectionState.disconnected) {
           _isStreaming = false;
+          _lastStatus = null;
+          _lastExt = null;
+          _lastSev = null;
+          _lastDiag = null;
+          _analyzingStartTime = null;
+          _gyroFilter.reset();
+          _accelFilter.reset();
+        } else if (_connectionState == BluetoothConnectionState.connected) {
+          _lastStatus = null;
+          _lastExt = null;
+          _lastSev = null;
+          _lastDiag = null;
+          _analyzingStartTime = null;
+          resetSessionCounters();
         }
         notifyListeners();
       }
@@ -133,47 +431,215 @@ class TremorProvider with ChangeNotifier {
     _bleService.startScanAndConnect();
   }
 
+  void resetSessionCounters() {
+    _sessionSinTemblorCount = 0;
+    _sessionLeveCount = 0;
+    _sessionModeradoCount = 0;
+    _sessionGraveCount = 0;
+    _sessionVoluntarioCount = 0;
+    _incoherenceCount = 0;
+    _episodeCount = 0;
+    _prevConfirmed = false;
+  }
+
+  /* 
+   * LÓGICA ANTERIOR DE RECLASIFICACIÓN POR AMPLITUD (DESACTIVADA)
+   * // reemplazado: la clase viene del reloj
+   */
+
+  Future<void> setRawCardVisibility(bool visible) async {
+    _isRawCardVisible = visible;
+    await _repository.sendRawControl(visible);
+    notifyListeners();
+  }
+
+  void _recordDebugStatus(TremorStatus status) {
+    // // reemplazado: la clase viene del reloj
+    final record = DebugPacketRecord(
+      tMs: status.tMs,
+      tremorClass: status.isAnalyzing ? "ANALIZANDO" : status.tremorClass.nameEs,
+      confirmed: status.tremorPresent,
+      detected: status.detected,
+      fHz: status.domFreq,
+      ampDps: status.tremorAmp,
+      movDps: status.movement,
+      bandPct: status.bandFrac,
+      dutyPct: status.duty,
+      episodioS: status.episode,
+      accelMg: _lastExt?.accelAmpMg,
+      ratio: _lastExt?.ratio,
+      angDeg: _lastExt?.angDeg,
+      rotacional: _lastExt?.isRotational,
+      ruta: _lastDiag?.ruta,
+      votos: _lastDiag?.votos,
+      activos: _lastDiag?.ejesActivos,
+      compuerta: _lastDiag?.compuerta,
+      lin: _lastDiag?.lin,
+      prel3: _lastDiag?.prel3Pct,
+      vol110: _lastDiag?.vol110Pct,
+      sigmaMin: _lastDiag?.sigmaMin,
+      rmsPc: _lastDiag?.rmsPc,
+      isIncoherent: status.detected && status.tremorClass == TremorClass.voluntario,
+      receivedAt: DateTime.now(),
+    );
+
+    _debugRecords.add(record);
+    if (_debugRecords.length > maxDebugRecords) {
+      _debugRecords.removeAt(0);
+    }
+  }
+
+  void _recordDebugExt(TremorExt ext) {
+    if (_debugRecords.isNotEmpty) {
+      final last = _debugRecords.last;
+      if (last.tMs == ext.tMs) {
+        _debugRecords[_debugRecords.length - 1] = DebugPacketRecord(
+          tMs: last.tMs,
+          tremorClass: last.tremorClass,
+          confirmed: last.confirmed,
+          detected: last.detected,
+          fHz: last.fHz,
+          ampDps: last.ampDps,
+          movDps: last.movDps,
+          bandPct: last.bandPct,
+          dutyPct: last.dutyPct,
+          episodioS: last.episodioS,
+          accelMg: ext.accelAmpMg,
+          ratio: ext.ratio,
+          angDeg: ext.angDeg,
+          rotacional: ext.isRotational,
+          ruta: last.ruta,
+          votos: last.votos,
+          activos: last.activos,
+          compuerta: last.compuerta,
+          lin: last.lin,
+          prel3: last.prel3,
+          vol110: last.vol110,
+          sigmaMin: last.sigmaMin,
+          rmsPc: last.rmsPc,
+          isIncoherent: last.isIncoherent,
+          receivedAt: last.receivedAt,
+        );
+      }
+    }
+  }
+
+  void _recordDebugDiag(TremorDiag diag) {
+    if (_debugRecords.isNotEmpty) {
+      final last = _debugRecords.last;
+      if (last.tMs == diag.tMs) {
+        _debugRecords[_debugRecords.length - 1] = DebugPacketRecord(
+          tMs: last.tMs,
+          tremorClass: last.tremorClass,
+          confirmed: last.confirmed,
+          detected: last.detected,
+          fHz: last.fHz,
+          ampDps: last.ampDps,
+          movDps: last.movDps,
+          bandPct: last.bandPct,
+          dutyPct: last.dutyPct,
+          episodioS: last.episodioS,
+          accelMg: last.accelMg,
+          ratio: last.ratio,
+          angDeg: last.angDeg,
+          rotacional: diag.rotacional,
+          ruta: diag.ruta,
+          votos: diag.votos,
+          activos: diag.ejesActivos,
+          compuerta: diag.compuerta,
+          lin: diag.lin,
+          prel3: diag.prel3Pct,
+          vol110: diag.vol110Pct,
+          sigmaMin: diag.sigmaMin,
+          rmsPc: diag.rmsPc,
+          isIncoherent: last.isIncoherent,
+          receivedAt: last.receivedAt,
+        );
+      }
+    }
+  }
+
+  String exportDebugCsv() {
+    final buffer = StringBuffer();
+    buffer.writeln(
+        't_ms,clase,confirmado,detectado,f_hz,amp_dps,mov_dps,band_pct,duty_pct,episodio_s,accel_mg,ratio,ang_deg,rotacional,ruta,votos,activos,compuerta,lin,prel3,vol110,sigma_min,rms_pc,incoherente');
+    for (var r in _debugRecords) {
+      buffer.writeln(r.toCsvLine());
+    }
+    return buffer.toString();
+  }
+
+  String exportRaw60sCsv() {
+    final buffer = StringBuffer();
+    buffer.writeln('t_ms,ax,ay,az,gx,gy,gz');
+    for (var r in _raw60sBuffer) {
+      buffer.writeln(
+          '${r.tMs},${r.axG.toStringAsFixed(3)},${r.ayG.toStringAsFixed(3)},${r.azG.toStringAsFixed(3)},${r.gxDps.toStringAsFixed(1)},${r.gyDps.toStringAsFixed(1)},${r.gzDps.toStringAsFixed(1)}');
+    }
+    return buffer.toString();
+  }
+
   String _getBucketId(DateTime dt) {
     final userId = _firebaseService.currentUserId ?? "anon";
     final dateStr = DateFormat('yyyy-MM-dd').format(dt);
-    final minute = (dt.minute ~/ 5) * 5; // Cambiado de 15 a 5
+    final minute = (dt.minute ~/ 5) * 5;
     return "${userId}_${dateStr}_${dt.hour}_$minute";
   }
 
-  void _processSampleForBucket(TremorSample sample) {
+  void _processStatusForBucket(TremorStatus status) {
+    if (status.isAnalyzing) return; // NO guardar las ventanas ANALIZANDO como sin temblor
     final now = DateTime.now();
-    if (_lastSampleProcessed != null && now.difference(_lastSampleProcessed!).inSeconds < 10) return;
-    _lastSampleProcessed = now;
-
     final bucketId = _getBucketId(now);
     _buckets.putIfAbsent(bucketId, () => HourAccumulator(now));
-    
+
     final acc = _buckets[bucketId]!;
+
     acc.totalSamples++;
-    acc.sumIntensity += sample.tremorAmp;
-    if (sample.tremorAmp > acc.maxIntensity) acc.maxIntensity = sample.tremorAmp;
-    
-    if (_lastStatus?.tremorPresent == true) acc.tremorSamples++;
-    if (_lastStatus?.domFreq != null && _lastStatus!.domFreq > 0) {
-      acc.sumDomFreq += _lastStatus!.domFreq;
-      acc.domFreqCount++;
+
+    // // reemplazado: la clase viene del reloj
+    final int classVal = status.tremorClass.index;
+    if (classVal >= 1 && classVal <= 3) {
+      acc.tremorSamples++;
+      acc.sumIntensity += status.tremorAmp;
+      if (status.tremorAmp > acc.maxIntensity) {
+        acc.maxIntensity = status.tremorAmp;
+      }
+      if (status.domFreq > 0) {
+        acc.sumDomFreq += status.domFreq;
+        acc.domFreqCount++;
+      }
     }
-    
-    final classification = getClassification(sample.tremorAmp, _lastStatus);
-    acc.severityCounts[classification.severity] = (acc.severityCounts[classification.severity] ?? 0) + 1;
-    
+
+    final className = status.tremorClass.nameEs;
+    acc.severityCounts[className] = (acc.severityCounts[className] ?? 0) + 1;
+
     _saveBuckets();
+  }
+
+  void _processExtForBucket(TremorExt ext) {
+    final now = DateTime.now();
+    final bucketId = _getBucketId(now);
+    if (_buckets.containsKey(bucketId)) {
+      final acc = _buckets[bucketId]!;
+      // // reemplazado: la clase viene del reloj
+      if (ext.tremorClass.index >= 1 && ext.tremorClass.index <= 3) {
+        acc.sumAngleDeg += ext.angDeg;
+        acc.angleCount++;
+        if (ext.angDeg > acc.maxAngleDeg) {
+          acc.maxAngleDeg = ext.angDeg;
+        }
+      }
+    }
   }
 
   void _checkAutoUpload() {
     final now = DateTime.now();
     final currentBucketId = _getBucketId(now);
-    
-    // Si hay buckets en memoria que no son el actual, significa que ya terminaron
+
     bool hasFinishedBuckets = _buckets.keys.any((id) => id != currentBucketId);
-    
+
     if (hasFinishedBuckets) {
-      print("TremorProvider: Detectados bloques terminados. Iniciando subida automática...");
+      print("TremorProvider: Bloques terminados detectados. Subida automática...");
       uploadSummary();
     }
   }
@@ -183,13 +649,15 @@ class TremorProvider with ChangeNotifier {
     final data = prefs.getString('tremor_buckets');
     if (data != null) {
       final Map<String, dynamic> decoded = json.decode(data);
-      _buckets = decoded.map((key, value) => MapEntry(key, HourAccumulator.fromJson(value)));
+      _buckets = decoded.map(
+          (key, value) => MapEntry(key, HourAccumulator.fromJson(value)));
     }
   }
 
   Future<void> _saveBuckets() async {
     final prefs = await SharedPreferences.getInstance();
-    final data = json.encode(_buckets.map((key, value) => MapEntry(key, value.toJson())));
+    final data =
+        json.encode(_buckets.map((key, value) => MapEntry(key, value.toJson())));
     await prefs.setString('tremor_buckets', data);
   }
 
@@ -199,49 +667,43 @@ class TremorProvider with ChangeNotifier {
       final acc = _buckets[id]!;
       if (acc.totalSamples == 0) continue;
 
-      // Partes del ID: userId_date_hour_minute
       final parts = id.split('_');
-      final date = parts.length > 1 ? parts[1] : DateFormat('yyyy-MM-dd').format(acc.startTime);
-      final hour = parts.length > 2 ? int.tryParse(parts[2]) ?? acc.startTime.hour : acc.startTime.hour;
-      final minute = parts.length > 3 ? int.tryParse(parts[3]) ?? ((acc.startTime.minute ~/ 5) * 5) : ((acc.startTime.minute ~/ 5) * 5);
+      final date = parts.length > 1
+          ? parts[1]
+          : DateFormat('yyyy-MM-dd').format(acc.startTime);
+      final hour = parts.length > 2
+          ? int.tryParse(parts[2]) ?? acc.startTime.hour
+          : acc.startTime.hour;
+      final minute = parts.length > 3
+          ? int.tryParse(parts[3]) ?? ((acc.startTime.minute ~/ 5) * 5)
+          : ((acc.startTime.minute ~/ 5) * 5);
 
       final summary = TremorSummary(
         id: id,
         startTime: acc.startTime,
         endTime: DateTime.now(),
-        avgIntensity: acc.sumIntensity / acc.totalSamples,
+        avgIntensity: acc.tremorSamples > 0 ? acc.sumIntensity / acc.tremorSamples : 0.0,
         maxIntensity: acc.maxIntensity,
+        avgAngleDeg: acc.angleCount > 0 ? acc.sumAngleDeg / acc.angleCount : 0.0,
+        maxAngleDeg: acc.maxAngleDeg,
         totalSamples: acc.totalSamples,
         tremorSamples: acc.tremorSamples,
-        avgDomFreq: acc.domFreqCount > 0 ? acc.sumDomFreq / acc.domFreqCount : 0,
+        avgDomFreq: acc.domFreqCount > 0 ? acc.sumDomFreq / acc.domFreqCount : 0.0,
         severityCounts: acc.severityCounts,
         date: date,
         hour: hour,
         minute: minute,
+        taxonomyVersion: 2,
       );
 
       await _firebaseService.addTremorSummary(summary);
-      
-      // Solo removemos si el bucket ya no es el actual
+
       if (id != _getBucketId(DateTime.now())) {
         _buckets.remove(id);
       }
     }
     await _saveBuckets();
     notifyListeners();
-  }
-
-  ({String severity, String type, Color color, IconData icon, int level}) getClassification(double dps, TremorStatus? status) {
-    final bool isPD = status?.tremorPresent ?? false;
-    final double freq = status?.domFreq ?? 0.0;
-    if (dps > 100 || (freq < 2.0 && dps > 100 && !isPD)) {
-       return (severity: "VOLUNTARIO", type: "Movimiento Detectado", color: Colors.blue, icon: Icons.directions_run, level: 3);
-    }
-    if (isPD) {
-      if (dps >= 50) return (severity: "GRAVE", type: "Temblor Parkinsoniano", color: Colors.red, icon: Icons.error_outline, level: 2);
-      else if (dps >= 10) return (severity: "MODERADO", type: "Temblor Parkinsoniano", color: Colors.orange, icon: Icons.warning_amber_rounded, level: 1);
-    }
-    return (severity: "LEVE", type: "Reposo / Ruido", color: Colors.green, icon: Icons.check_circle_outline, level: 0);
   }
 
   Future<void> retryConnection() async {
@@ -254,6 +716,10 @@ class TremorProvider with ChangeNotifier {
     if (!_isStreaming) {
       _lastSample = null;
       _lastStatus = null;
+      _lastExt = null;
+      _lastSev = null;
+      _lastDiag = null;
+      _analyzingStartTime = null;
     }
     notifyListeners();
   }
@@ -285,6 +751,7 @@ class TremorProvider with ChangeNotifier {
 
   @override
   void dispose() {
+    _timeoutCheckTimer?.cancel();
     _repository.dispose();
     _rawFirestoreService.dispose();
     _csvCaptureService.dispose();

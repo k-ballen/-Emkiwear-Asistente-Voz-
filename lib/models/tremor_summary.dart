@@ -6,6 +6,8 @@ class TremorSummary {
   final DateTime endTime;
   final double avgIntensity;
   final double maxIntensity;
+  final double avgAngleDeg;
+  final double maxAngleDeg;
   final int totalSamples;
   final int tremorSamples;
   final double avgDomFreq;
@@ -13,6 +15,7 @@ class TremorSummary {
   final String date; // YYYY-MM-DD
   final int hour;   // 0-23
   final int minute; // 0, 5, 10, ..., 55
+  final int taxonomyVersion;
 
   TremorSummary({
     required this.id,
@@ -20,6 +23,8 @@ class TremorSummary {
     required this.endTime,
     required this.avgIntensity,
     required this.maxIntensity,
+    this.avgAngleDeg = 0.0,
+    this.maxAngleDeg = 0.0,
     required this.totalSamples,
     required this.tremorSamples,
     required this.avgDomFreq,
@@ -27,6 +32,7 @@ class TremorSummary {
     required this.date,
     required this.hour,
     required this.minute,
+    this.taxonomyVersion = 2,
   });
 
   factory TremorSummary.fromFirestore(String id, Map<String, dynamic> data) {
@@ -36,6 +42,8 @@ class TremorSummary {
       endTime: (data['endTime'] as Timestamp).toDate(),
       avgIntensity: (data['avgIntensity'] ?? 0.0).toDouble(),
       maxIntensity: (data['maxIntensity'] ?? 0.0).toDouble(),
+      avgAngleDeg: (data['avgAngleDeg'] ?? 0.0).toDouble(),
+      maxAngleDeg: (data['maxAngleDeg'] ?? 0.0).toDouble(),
       totalSamples: data['totalSamples'] ?? 0,
       tremorSamples: data['tremorSamples'] ?? 0,
       avgDomFreq: (data['avgDomFreq'] ?? 0.0).toDouble(),
@@ -43,6 +51,7 @@ class TremorSummary {
       date: data['date'] ?? '',
       hour: data['hour'] ?? 0,
       minute: data['minute'] ?? 0,
+      taxonomyVersion: data['taxonomyVersion'] ?? 1,
     );
   }
 
@@ -52,6 +61,8 @@ class TremorSummary {
       'endTime': Timestamp.fromDate(endTime),
       'avgIntensity': avgIntensity,
       'maxIntensity': maxIntensity,
+      'avgAngleDeg': avgAngleDeg,
+      'maxAngleDeg': maxAngleDeg,
       'totalSamples': totalSamples,
       'tremorSamples': tremorSamples,
       'avgDomFreq': avgDomFreq,
@@ -59,6 +70,7 @@ class TremorSummary {
       'date': date,
       'hour': hour,
       'minute': minute,
+      'taxonomyVersion': taxonomyVersion,
       'lastSync': FieldValue.serverTimestamp(),
     };
   }

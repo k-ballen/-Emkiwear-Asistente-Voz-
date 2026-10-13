@@ -4,10 +4,33 @@ import 'package:provider/provider.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:share_plus/share_plus.dart';
 import '../../services/tremor_provider.dart';
-import '../../services/csv_capture_service.dart';
+import '../../models/ble_device_data.dart';
+import 'debug_screen.dart';
 
-class TremorChartScreen extends StatelessWidget {
+class TremorChartScreen extends StatefulWidget {
   const TremorChartScreen({super.key});
+
+  @override
+  State<TremorChartScreen> createState() => _TremorChartScreenState();
+}
+
+class _TremorChartScreenState extends State<TremorChartScreen> {
+  bool _showGyro = true; // true = Giroscopio (°/s), false = Acelerómetro (g)
+  bool _showFiltered = true; // true = Filtrado 2.5-8 Hz, false = Crudo
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final provider = Provider.of<TremorProvider>(context, listen: false);
+      provider.setRawCardVisibility(true);
+    });
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -18,6 +41,16 @@ class TremorChartScreen extends StatelessWidget {
         title: const Text('Mi Temblor'),
         backgroundColor: Colors.purple.shade100,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.bug_report, color: Colors.purple),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const DebugScreen()),
+              );
+            },
+            tooltip: "Depuración (MATLAB)",
+          ),
           IconButton(
             icon: Icon(
               tremorProvider.isRawUploadEnabled ? Icons.analytics : Icons.analytics_outlined,
@@ -62,24 +95,59 @@ class TremorChartScreen extends StatelessWidget {
           ),
         ),
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20.0),
+          padding: const EdgeInsets.all(16.0),
           child: Column(
             children: [
-              _buildRealTimeCard(tremorProvider),
-              const SizedBox(height: 20),
-              _buildStatsGrid(tremorProvider),
-              const SizedBox(height: 20),
+              if (tremorProvider.isFirmwareOutdated) ...[
+                _buildFirmwareWarningBanner(),
+                const SizedBox(height: 16),
+              ],
+              _buildMainCurrentStateCard(tremorProvider),
+              const SizedBox(height: 12),
+              _buildWhyCard(tremorProvider),
+              const SizedBox(height: 16),
+              _buildRawSignalCard(tremorProvider),
+              const SizedBox(height: 16),
+              _buildTimelineCard(tremorProvider),
+              const SizedBox(height: 16),
+              _buildSessionCountersSection(tremorProvider),
+              const SizedBox(height: 16),
               _buildCsvCaptureCard(tremorProvider),
-              const SizedBox(height: 30),
-              _buildWeeklyDemoSection(),
             ],
           ),
         ),
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => tremorProvider.retryConnection(),
-        child: const Icon(Icons.refresh),
         backgroundColor: Colors.purple,
+        child: const Icon(Icons.refresh),
+      ),
+    );
+  }
+
+  Widget _buildFirmwareWarningBanner() {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.amber.shade100,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.amber.shade800),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.warning_amber_rounded, color: Colors.amber.shade900),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              "Actualiza el firmware del reloj (versión < 2.0.0 detectada).",
+              style: TextStyle(
+                color: Colors.amber.shade900,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -102,8 +170,8 @@ class TremorChartScreen extends StatelessWidget {
     }
 
     return Container(
-      margin: const EdgeInsets.only(right: 16),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      margin: const EdgeInsets.only(right: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         color: color.withOpacity(0.2),
         borderRadius: BorderRadius.circular(12),
@@ -112,155 +180,545 @@ class TremorChartScreen extends StatelessWidget {
       child: Center(
         child: Text(
           text,
-          style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.bold),
+          style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold),
         ),
       ),
     );
   }
 
-  Widget _buildRealTimeCard(TremorProvider provider) {
-    final data = provider.history;
-    
-    // Cálculo dinámico de escala
-    double maxVal = 5.0;
-    for (var s in data) {
-      if (s.tremorAmp > maxVal) maxVal = s.tremorAmp;
-    }
-    maxVal = (maxVal * 1.2).ceilToDouble(); // Margen del 20%
+  // 1. TARJETA PRINCIPAL DE ESTADO ACTUAL
+  Widget _buildMainCurrentStateCard(TremorProvider provider) {
+    Widget cardChild;
 
-    return Card(
-      elevation: 4,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      child: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  'Velocidad de Rotación',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.purple),
-                ),
-                if (provider.lastStatus?.tremorPresent ?? false)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(color: Colors.red.shade100, borderRadius: BorderRadius.circular(10)),
-                    child: const Text('TEMBLOR', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.red)),
-                  ),
-              ],
+    if (provider.connectionState != BluetoothConnectionState.connected) {
+      cardChild = _buildMessageCard(
+        key: const ValueKey('disconnected'),
+        title: "Reloj Desconectado",
+        subtitle: "Conecta tu reloj EMKIWEAR para iniciar el monitoreo",
+        icon: Icons.bluetooth_disabled,
+        color: Colors.grey,
+      );
+    } else if (provider.isDataTimeout) {
+      cardChild = _buildMessageCard(
+        key: const ValueKey('timeout'),
+        title: "Sin datos del reloj",
+        subtitle: "No se reciben paquetes STATUS del reloj. Verifica la conexión BLE.",
+        icon: Icons.signal_cellular_connected_no_internet_0_bar,
+        color: Colors.red,
+      );
+    } else {
+      final status = provider.lastStatus;
+      if (status == null || status.isAnalyzing) {
+        final progress = provider.analyzingProgress;
+        cardChild = Card(
+          key: const ValueKey('analizando'),
+          elevation: 4,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: const Color(0xFF9E9E9E),
+              borderRadius: BorderRadius.circular(20),
             ),
-            const SizedBox(height: 15),
-            _buildClassificationBox(provider),
-            const SizedBox(height: 15),
-            SizedBox(
-              height: 200,
-              child: data.isEmpty
-                  ? Center(
-                      child: Text(
-                        provider.connectionState == BluetoothConnectionState.connected
-                            ? (provider.isStreaming ? "Esperando datos..." : "Transmisión pausada")
-                            : "Reloj desconectado",
-                      ),
-                    )
-                  : LineChart(
-                      LineChartData(
-                        minY: 0,
-                        maxY: maxVal,
-                        gridData: const FlGridData(show: true, drawVerticalLine: false),
-                        titlesData: FlTitlesData(
-                          show: true,
-                          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                          bottomTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                          leftTitles: AxisTitles(
-                            sideTitles: SideTitles(
-                              showTitles: true,
-                              reservedSize: 40,
-                              getTitlesWidget: (value, meta) => Text(value.toInt().toString(), style: const TextStyle(fontSize: 10)),
-                            ),
-                          ),
-                        ),
-                        borderData: FlBorderData(show: true, border: Border.all(color: Colors.black12)),
-                        lineBarsData: [
-                          LineChartBarData(
-                            spots: data.asMap().entries.map((e) {
-                              return FlSpot(e.key.toDouble(), e.value.tremorAmp);
-                            }).toList(),
-                            isCurved: true,
-                            color: Colors.redAccent,
-                            barWidth: 3,
-                            dotData: const FlDotData(show: false),
-                            belowBarData: BarAreaData(show: true, color: Colors.redAccent.withOpacity(0.1)),
-                          ),
-                        ],
+            child: Column(
+              children: [
+                const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.query_stats, color: Colors.white, size: 28),
+                    SizedBox(width: 10),
+                    Text(
+                      "Analizando…",
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
                       ),
                     ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              provider.lastSample != null 
-                ? "Última muestra: ${provider.lastSample!.tremorAmp.toStringAsFixed(2)} dps"
-                : "Sin datos",
-              style: const TextStyle(fontSize: 12, color: Colors.black54),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'A mayor altura en la gráfica, más rápido y brusco es el temblor detectado.',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildClassificationBox(TremorProvider provider) {
-    final dps = provider.lastSample?.tremorAmp ?? 0.0;
-    final classification = provider.getClassification(dps, provider.lastStatus);
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: classification.color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(15),
-        border: Border.all(color: classification.color.withOpacity(0.5), width: 1),
-      ),
-      child: Row(
-        children: [
-          Icon(classification.icon, color: classification.color, size: 30),
-          const SizedBox(width: 15),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  classification.severity,
-                  style: TextStyle(
-                    color: classification.color,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14,
-                    letterSpacing: 1.2,
-                  ),
+                  ],
                 ),
-                Text(
-                  classification.type,
-                  style: const TextStyle(
-                    color: Colors.black87,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                  ),
+                const SizedBox(height: 8),
+                const Text(
+                  "Mantén el reloj puesto, quieto unos segundos",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 13, color: Colors.white70),
+                ),
+                const SizedBox(height: 16),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: progress == -1.0
+                      ? const LinearProgressIndicator(
+                          minHeight: 8,
+                          color: Colors.white,
+                          backgroundColor: Colors.white24,
+                        )
+                      : LinearProgressIndicator(
+                          value: progress,
+                          minHeight: 8,
+                          color: Colors.white,
+                          backgroundColor: Colors.white24,
+                        ),
                 ),
               ],
             ),
           ),
+        );
+      } else {
+        final estado = status.estado;
+        final ext = provider.lastExt;
+        final sev = provider.lastSev;
+
+        switch (estado) {
+          case EstadoTemblor.analizando:
+            cardChild = const SizedBox.shrink();
+            break;
+
+          case EstadoTemblor.sinTemblor:
+            cardChild = _buildStatusCardContainer(
+              key: const ValueKey('sinTemblor'),
+              bgColor: const Color(0xFFE0E0E0),
+              textColor: Colors.black87,
+              title: "SIN TEMBLOR",
+              subtitle: "Reposo o movimiento habitual sin patrones parkinsonianos",
+              badge: status.detected ? "Detectando…" : "Normal",
+              badgeColor: status.detected ? Colors.amber.shade800 : Colors.black12,
+              details: [
+                _buildMetricItem(
+                  label: "Movimiento",
+                  value: "${status.movement.toStringAsFixed(1)} °/s",
+                  icon: Icons.directions_walk,
+                  color: Colors.black87,
+                )
+              ],
+            );
+            break;
+
+          case EstadoTemblor.voluntario:
+            cardChild = _buildStatusCardContainer(
+              key: const ValueKey('voluntario'),
+              bgColor: const Color(0xFF1E5AC8),
+              textColor: Colors.white,
+              title: "MOVIMIENTO VOLUNTARIO",
+              subtitle: "Movimiento rápido o voluntario del usuario",
+              badge: status.detected ? "Detectando…" : "Voluntario",
+              badgeColor: Colors.white24,
+              details: [
+                _buildMetricItem(
+                  label: "Velocidad",
+                  value: "${status.movement.toStringAsFixed(1)} °/s",
+                  icon: Icons.directions_run,
+                  color: Colors.white,
+                )
+              ],
+            );
+            break;
+
+          case EstadoTemblor.leve:
+          case EstadoTemblor.moderado:
+          case EstadoTemblor.grave:
+            final isConfirmed = status.tremorPresent;
+            final baseColor = _getEstadoColor(estado);
+            final cardBgColor = isConfirmed ? baseColor : baseColor.withOpacity(0.5);
+
+            cardChild = Card(
+              key: ValueKey('temblor_${estado.nameEs}_$isConfirmed'),
+              elevation: 5,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              child: Container(
+                padding: const EdgeInsets.all(16.0),
+                decoration: BoxDecoration(
+                  color: cardBgColor,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'TEMBLOR PARKINSONIANO',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                              letterSpacing: 0.8,
+                            ),
+                          ),
+                        ),
+                        if (!isConfirmed)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.black26,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                SizedBox(
+                                  width: 10,
+                                  height: 10,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                SizedBox(width: 6),
+                                Text(
+                                  'detectando…',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Banner Severidad
+                    Text(
+                      estado.nameEs,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 28,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.5,
+                      ),
+                    ),
+                    Text(
+                      estado.description,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    // Métricas: Ángulo (principal), Desplazamiento, Frecuencia, Velocidad
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 10,
+                      alignment: WrapAlignment.spaceAround,
+                      children: [
+                        _buildMetricItem(
+                          label: "Ángulo (Principal)",
+                          value: ext != null
+                              ? "${ext.angDeg.toStringAsFixed(2)}°"
+                              : (sev != null ? "${sev.thetaDeg.toStringAsFixed(2)}°" : "--"),
+                          icon: Icons.rotate_right,
+                          color: Colors.white,
+                          isPrimary: true,
+                        ),
+                        _buildMetricItem(
+                          label: "Desplazamiento",
+                          value: sev != null
+                              ? "${sev.desplazCm.toStringAsFixed(1)} cm"
+                              : (ext != null ? "${(ext.angDeg * 0.2618).toStringAsFixed(1)} cm" : "--"),
+                          icon: Icons.straighten,
+                          color: Colors.white,
+                        ),
+                        _buildMetricItem(
+                          label: "Frecuencia",
+                          value: status.domFreq > 0 ? "${status.domFreq.toStringAsFixed(1)} Hz" : "--",
+                          icon: Icons.waves,
+                          color: Colors.white,
+                        ),
+                        _buildMetricItem(
+                          label: "Velocidad",
+                          value: "${status.tremorAmp.toStringAsFixed(1)} °/s",
+                          icon: Icons.speed,
+                          color: Colors.white,
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 12),
+                    const Divider(color: Colors.white24),
+
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            "Duración episodio: ${status.episode} s",
+                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+                          ),
+                        ),
+                        Text(
+                          "Duty cycle: ${status.duty}%",
+                          style: const TextStyle(fontSize: 12, color: Colors.white70),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 8),
+
+                    ExpansionTile(
+                      tilePadding: EdgeInsets.zero,
+                      iconColor: Colors.white,
+                      collapsedIconColor: Colors.white,
+                      title: const Text(
+                        "¿Cómo se clasifica?",
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+                      ),
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text("• LEVE: < 1.5° (≈ < 0.8 cm)", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+                              Text("• MODERADO: 1.5° - 4.5° (≈ 0.8 - 2.4 cm)", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+                              Text("• GRAVE: >= 4.5° (≈ >= 2.4 cm)", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+                              SizedBox(height: 4),
+                              Text(
+                                "Escala calibrada con el banco robótico y con temblor imitado. Los centímetros son una estimación del movimiento de los dedos (15 cm desde la muñeca).",
+                                style: TextStyle(fontSize: 10, fontStyle: FontStyle.italic, color: Colors.white70),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+            break;
+        }
+      }
+    }
+
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 250),
+      child: cardChild,
+    );
+  }
+
+  Color _getEstadoColor(EstadoTemblor estado) {
+    switch (estado) {
+      case EstadoTemblor.analizando:
+        return const Color(0xFF9E9E9E);
+      case EstadoTemblor.sinTemblor:
+        return const Color(0xFF2E7D32);
+      case EstadoTemblor.voluntario:
+        return const Color(0xFF1E5AC8);
+      case EstadoTemblor.leve:
+        return const Color(0xFF2E7D32);
+      case EstadoTemblor.moderado:
+        return const Color(0xFFD27800);
+      case EstadoTemblor.grave:
+        return const Color(0xFFC81414);
+    }
+  }
+
+  // PANEL ¿POR QUÉ? (PASO 5)
+  Widget _buildWhyCard(TremorProvider provider) {
+    final diag = provider.lastDiag;
+    if (diag == null) {
+      return const SizedBox.shrink(); // Ocultar automáticamente si DIAG no está disponible
+    }
+
+    String explanationText = "";
+    if (diag.ruta == 1) {
+      explanationText =
+          "Detectado por REGULARIDAD: pico estrecho (σ = ${diag.sigmaMin.toStringAsFixed(2)} Hz < 0.40) en ${diag.ejesActivos} ejes.";
+    } else if (diag.ruta == 2) {
+      explanationText =
+          "Detectado por GIRO EN UN SOLO EJE: linealidad ${(diag.lin * 100).toStringAsFixed(1)} % ≥ 95 %, energía en banda ${diag.prel3Pct} % ≥ 65 %, amplitud ${diag.rmsPc.toStringAsFixed(1)} °/s ≥ 45.";
+    }
+
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: ExpansionTile(
+        title: const Text(
+          "¿Por qué?",
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+            color: Colors.purple,
+          ),
+        ),
+        childrenPadding: const EdgeInsets.all(16.0),
+        children: [
+          if (diag.ruta == 1 || diag.ruta == 2)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.purple.shade50,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                explanationText,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.purple,
+                ),
+              ),
+            )
+          else ...[
+            const Text(
+              "Checklist de Criterios de Detección:",
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            _buildChecklistItem(
+              label: "Ruta 1 - Regularidad (σ < 0.40 Hz):",
+              passed: diag.sigmaMin < 0.40,
+              detail: "σ = ${diag.sigmaMin.toStringAsFixed(2)} Hz",
+            ),
+            _buildChecklistItem(
+              label: "Ruta 2 - Linealidad (≥ 95 %):",
+              passed: diag.lin >= 0.95,
+              detail: "${(diag.lin * 100).toStringAsFixed(1)} %",
+            ),
+            _buildChecklistItem(
+              label: "Ruta 2 - Energía en banda (≥ 65 %):",
+              passed: diag.prel3Pct >= 65,
+              detail: "${diag.prel3Pct} %",
+            ),
+            _buildChecklistItem(
+              label: "Ruta 2 - Amplitud (≥ 45 °/s):",
+              passed: diag.rmsPc >= 45.0,
+              detail: "${diag.rmsPc.toStringAsFixed(1)} °/s",
+            ),
+            _buildChecklistItem(
+              label: "Compuerta - Energía voluntaria (< 30 %):",
+              passed: diag.vol110Pct < 30,
+              detail: "${diag.vol110Pct} %",
+            ),
+            _buildChecklistItem(
+              label: "Rotación de muñeca:",
+              passed: diag.rotacional,
+              detail: diag.rotacional ? "sí" : "no",
+            ),
+          ],
+
+          const SizedBox(height: 16),
+          const Divider(),
+          const SizedBox(height: 8),
+
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    "Energía Voluntaria (1–2.5 Hz)",
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
+                  Text(
+                    "${diag.vol110Pct} % (Límite < 30 %)",
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: diag.vol110Pct >= 30 ? Colors.red : Colors.green,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Stack(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: LinearProgressIndicator(
+                      value: (diag.vol110Pct / 100.0).clamp(0.0, 1.0),
+                      minHeight: 12,
+                      backgroundColor: Colors.grey.shade200,
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        diag.vol110Pct >= 30 ? Colors.red : Colors.green,
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    top: 0,
+                    bottom: 0,
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final markPosition = constraints.maxWidth * 0.30;
+                        return Stack(
+                          children: [
+                            Positioned(
+                              left: markPosition,
+                              top: 0,
+                              bottom: 0,
+                              child: Container(
+                                width: 3,
+                                color: Colors.black87,
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text("0 %", style: TextStyle(fontSize: 9, color: Colors.grey)),
+                  Text("Límite 30 %", style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.black87)),
+                  Text("100 %", style: TextStyle(fontSize: 9, color: Colors.grey)),
+                ],
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildChecklistItem({
+    required String label,
+    required bool passed,
+    required String detail,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Icon(
+                passed ? Icons.check_circle : Icons.cancel,
+                size: 15,
+                color: passed ? Colors.green : Colors.red,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: const TextStyle(fontSize: 11, color: Colors.black87),
+              ),
+            ],
+          ),
           Text(
-            "${dps.toStringAsFixed(1)} dps",
+            detail,
             style: TextStyle(
-              color: classification.color,
+              fontSize: 11,
               fontWeight: FontWeight.bold,
-              fontSize: 16,
+              color: passed ? Colors.green : Colors.red,
             ),
           ),
         ],
@@ -268,89 +726,645 @@ class TremorChartScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildStatsGrid(TremorProvider provider) {
-    final status = provider.lastStatus;
-    final isConnected = provider.connectionState == BluetoothConnectionState.connected;
-    final isCalibrating = isConnected && status == null && provider.lastSample != null;
-
-    if (isCalibrating) {
-      return Container(
-        padding: const EdgeInsets.all(20),
+  Widget _buildStatusCardContainer({
+    required Key key,
+    required Color bgColor,
+    required Color textColor,
+    required String title,
+    required String subtitle,
+    required String badge,
+    required Color badgeColor,
+    required List<Widget> details,
+  }) {
+    return Card(
+      key: key,
+      elevation: 5,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Container(
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: Colors.blue.shade50,
+          color: bgColor,
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.blue.shade200),
         ),
-        child: const Column(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            CircularProgressIndicator(strokeWidth: 2),
-            SizedBox(height: 15),
-            Text(
-              "Calibrando...",
-              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: textColor,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: badgeColor,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    badge,
+                    style: TextStyle(fontSize: 11, color: textColor, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
             ),
+            const SizedBox(height: 6),
             Text(
-              "mantén el reloj quieto",
-              style: TextStyle(fontSize: 12, color: Colors.blueGrey),
+              subtitle,
+              textAlign: TextAlign.left,
+              style: TextStyle(fontSize: 12, color: textColor.withOpacity(0.9)),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: details,
             ),
           ],
         ),
-      );
-    }
+      ),
+    );
+  }
 
-    String freqText = "--";
-    if (status != null) {
-      freqText = status.domFreq == 0 ? "—" : "${status.domFreq.toStringAsFixed(1)} Hz";
-    }
-    
-    return GridView.count(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      crossAxisCount: 2,
-      mainAxisSpacing: 10,
-      crossAxisSpacing: 10,
-      childAspectRatio: 1.5,
+  Widget _buildMetricItem({
+    required String label,
+    required String value,
+    required IconData icon,
+    required Color color,
+    bool isPrimary = false,
+  }) {
+    return Column(
       children: [
-        _buildStatItem("Frecuencia", freqText, Icons.waves, Colors.blue),
-        _buildStatItem("Amplitud", "${status?.tremorAmp.toStringAsFixed(1) ?? '--'} dps", Icons.height, Colors.orange),
-        _buildStatItem("Movimiento", "${status?.movement.toStringAsFixed(1) ?? '--'} dps", Icons.directions_run, Colors.green),
-        _buildStatItem(
-          "Episodio", 
-          "${status?.episode ?? '--'} s", 
-          Icons.timer, 
-          Colors.red,
-          tooltip: "Duración del temblor detectado en segundos",
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: isPrimary ? 15 : 13, color: color),
+            const SizedBox(width: 4),
+            Text(label, style: TextStyle(fontSize: isPrimary ? 11 : 10, color: Colors.white70)),
+          ],
+        ),
+        const SizedBox(height: 2),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: isPrimary ? 17 : 14,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
         ),
       ],
     );
   }
 
-  Widget _buildStatItem(String label, String value, IconData icon, Color color, {String? tooltip}) {
+  Widget _buildMessageCard({
+    required Key key,
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    required Color color,
+  }) {
     return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-      child: Tooltip(
-        message: tooltip ?? "",
-        child: Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(icon, size: 16, color: color),
-                  const SizedBox(width: 5),
-                  Text(label, style: const TextStyle(fontSize: 12, color: Colors.black54)),
-                ],
-              ),
-              const SizedBox(height: 5),
-              Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            ],
-          ),
+      key: key,
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.all(20.0),
+        child: Column(
+          children: [
+            Icon(icon, size: 44, color: color),
+            const SizedBox(height: 10),
+            Text(
+              title,
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: color),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+          ],
         ),
       ),
     );
+  }
+
+  // 2. NUEVA TARJETA "SEÑAL POR EJE"
+  Widget _buildRawSignalCard(TremorProvider provider) {
+    final status = provider.lastStatus;
+    Color borderColor = Colors.grey.shade300;
+    if (status != null) {
+      if (status.isAnalyzing) {
+        borderColor = const Color(0xFF9E9E9E);
+      } else {
+        switch (status.tremorClass) {
+          case TremorClass.leve:
+            borderColor = const Color(0xFF2E7D32);
+            break;
+          case TremorClass.moderado:
+            borderColor = const Color(0xFFD27800);
+            break;
+          case TremorClass.grave:
+            borderColor = const Color(0xFFC81414);
+            break;
+          default:
+            borderColor = Colors.grey.shade300;
+        }
+      }
+    }
+
+    final rawBuffer = provider.rawAxisBuffer;
+    final filteredG = provider.filteredGyroBuffer;
+    final filteredA = provider.filteredAccelBuffer;
+
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(color: borderColor, width: 2),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Señal por eje (10 s)',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.purple),
+                ),
+                if (status?.isAnalyzing ?? false)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Text('Analizando…', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                  )
+                else
+                  const Text(
+                    '50 Hz',
+                    style: TextStyle(fontSize: 11, color: Colors.black45),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                SegmentedButton<bool>(
+                  style: const ButtonStyle(
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  segments: const [
+                    ButtonSegment(value: true, label: Text('Giro (°/s)', style: TextStyle(fontSize: 10))),
+                    ButtonSegment(value: false, label: Text('Accel (g)', style: TextStyle(fontSize: 10))),
+                  ],
+                  selected: {_showGyro},
+                  onSelectionChanged: (set) => setState(() => _showGyro = set.first),
+                ),
+                SegmentedButton<bool>(
+                  style: const ButtonStyle(
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  segments: const [
+                    ButtonSegment(value: false, label: Text('Crudo', style: TextStyle(fontSize: 10))),
+                    ButtonSegment(value: true, label: Text('Filtrado', style: TextStyle(fontSize: 10))),
+                  ],
+                  selected: {_showFiltered},
+                  onSelectionChanged: (set) => setState(() => _showFiltered = set.first),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 15),
+
+            SizedBox(
+              height: 180,
+              child: rawBuffer.isEmpty
+                  ? const Center(
+                      child: Text('Esperando datos RAW...', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                    )
+                  : LineChart(
+                      LineChartData(
+                        gridData: const FlGridData(show: true, drawVerticalLine: false),
+                        titlesData: const FlTitlesData(
+                          rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                          topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                          bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                          leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 35)),
+                        ),
+                        borderData: FlBorderData(show: true, border: Border.all(color: Colors.black12)),
+                        lineBarsData: [
+                          LineChartBarData(
+                            spots: rawBuffer.asMap().entries.map((e) {
+                              final idx = e.key;
+                              double val;
+                              if (_showGyro) {
+                                val = _showFiltered ? filteredG[idx].x : e.value.gxDps;
+                              } else {
+                                val = _showFiltered ? filteredA[idx].x : e.value.axG;
+                              }
+                              return FlSpot(idx.toDouble(), val);
+                            }).toList(),
+                            isCurved: false,
+                            color: Colors.red,
+                            barWidth: 1.5,
+                            dotData: const FlDotData(show: false),
+                          ),
+                          LineChartBarData(
+                            spots: rawBuffer.asMap().entries.map((e) {
+                              final idx = e.key;
+                              double val;
+                              if (_showGyro) {
+                                val = _showFiltered ? filteredG[idx].y : e.value.gyDps;
+                              } else {
+                                val = _showFiltered ? filteredA[idx].y : e.value.ayG;
+                              }
+                              return FlSpot(idx.toDouble(), val);
+                            }).toList(),
+                            isCurved: false,
+                            color: Colors.green,
+                            barWidth: 1.5,
+                            dotData: const FlDotData(show: false),
+                          ),
+                          LineChartBarData(
+                            spots: rawBuffer.asMap().entries.map((e) {
+                              final idx = e.key;
+                              double val;
+                              if (_showGyro) {
+                                val = _showFiltered ? filteredG[idx].z : e.value.gzDps;
+                              } else {
+                                val = _showFiltered ? filteredA[idx].z : e.value.azG;
+                              }
+                              return FlSpot(idx.toDouble(), val);
+                            }).toList(),
+                            isCurved: false,
+                            color: Colors.blue,
+                            barWidth: 1.5,
+                            dotData: const FlDotData(show: false),
+                          ),
+                        ],
+                      ),
+                    ),
+            ),
+
+            const SizedBox(height: 10),
+
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _buildAxisLegend('Eje X', Colors.red),
+                const SizedBox(width: 16),
+                _buildAxisLegend('Eje Y', Colors.green),
+                const SizedBox(width: 16),
+                _buildAxisLegend('Eje Z', Colors.blue),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAxisLegend(String label, Color color) {
+    return Row(
+      children: [
+        Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        const SizedBox(width: 4),
+        Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black54)),
+      ],
+    );
+  }
+
+  // 3. LÍNEA DE TIEMPO (CON SOPORTE PARA ANALIZANDO)
+  Widget _buildTimelineCard(TremorProvider provider) {
+    final timeline = provider.timeline;
+
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Línea de Tiempo (2 minutos)',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.purple),
+                ),
+                Text(
+                  '${(timeline.length * 0.5).toStringAsFixed(0)} s / 120 s',
+                  style: const TextStyle(fontSize: 11, color: Colors.black45),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (timeline.isEmpty)
+              const SizedBox(
+                height: 50,
+                child: Center(
+                  child: Text('Sin historial acumulado', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                ),
+              )
+            else
+              SizedBox(
+                height: 55,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: timeline.map((st) {
+                    final color = st.isAnalyzing ? const Color(0xFF9E9E9E) : _getTremorClassColor(st.tremorClass);
+                    final isConfirmed = st.tremorPresent && !st.isAnalyzing;
+
+                    return Expanded(
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 0.5),
+                        child: Column(
+                          children: [
+                            Container(
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: isConfirmed ? Colors.red : Colors.transparent,
+                                borderRadius: const BorderRadius.vertical(top: Radius.circular(2)),
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Expanded(
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: color,
+                                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(2)),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              alignment: WrapAlignment.center,
+              children: [
+                _buildTimelineLegendItem('ANALIZANDO', const Color(0xFF9E9E9E)),
+                _buildTimelineLegendItem('SIN TEMBLOR', const Color(0xFFE0E0E0)),
+                _buildTimelineLegendItem('LEVE', const Color(0xFF2E7D32)),
+                _buildTimelineLegendItem('MODERADO', const Color(0xFFD27800)),
+                _buildTimelineLegendItem('GRAVE', const Color(0xFFC81414)),
+                _buildTimelineLegendItem('VOLUNTARIO', const Color(0xFF1E5AC8)),
+                _buildTimelineLegendItem('CONFIRMADO', Colors.red, isTopBar: true),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTimelineLegendItem(String label, Color color, {bool isTopBar = false}) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 8,
+          height: isTopBar ? 4 : 8,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        const SizedBox(width: 3),
+        Text(
+          label,
+          style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.black54),
+        ),
+      ],
+    );
+  }
+
+  // 4. ESTADÍSTICAS DE LA SESIÓN (DONA EXCLUSIVA PARA TEMBLOR LEVE/MODERADO/GRAVE)
+  Widget _buildSessionCountersSection(TremorProvider provider) {
+    final sinTemblorSec = provider.sessionSinTemblorCount * 0.5;
+    final leveSec = provider.sessionLeveCount * 0.5;
+    final modSec = provider.sessionModeradoCount * 0.5;
+    final graveSec = provider.sessionGraveCount * 0.5;
+    final volSec = provider.sessionVoluntarioCount * 0.5;
+
+    final tremorTotalSec = leveSec + modSec + graveSec;
+    final totalSessionSec = sinTemblorSec + tremorTotalSec + volSec;
+
+    final tremorPct = totalSessionSec > 0 ? (tremorTotalSec / totalSessionSec * 100) : 0.0;
+
+    final status = provider.lastStatus;
+    final dutyPct = status?.duty ?? 0;
+
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Estadísticas de la Sesión',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.purple),
+            ),
+            const SizedBox(height: 12),
+
+            Row(
+              children: [
+                SizedBox(
+                  width: 100,
+                  height: 100,
+                  child: tremorTotalSec == 0
+                      ? Container(
+                          decoration: const BoxDecoration(
+                            color: Colors.black12,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Center(
+                            child: Text(
+                              'Sin temblor en la sesión',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(fontSize: 9, color: Colors.black54, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        )
+                      : PieChart(
+                          PieChartData(
+                            sectionsSpace: 2,
+                            centerSpaceRadius: 24,
+                            sections: [
+                              if (leveSec > 0)
+                                PieChartSectionData(
+                                  color: const Color(0xFF2E7D32),
+                                  value: leveSec,
+                                  title: '',
+                                  radius: 18,
+                                ),
+                              if (modSec > 0)
+                                PieChartSectionData(
+                                  color: const Color(0xFFD27800),
+                                  value: modSec,
+                                  title: '',
+                                  radius: 18,
+                                ),
+                              if (graveSec > 0)
+                                PieChartSectionData(
+                                  color: const Color(0xFFC81414),
+                                  value: graveSec,
+                                  title: '',
+                                  radius: 18,
+                                ),
+                            ],
+                          ),
+                        ),
+                ),
+                const SizedBox(width: 16),
+
+                Expanded(
+                  child: Column(
+                    children: [
+                      _buildSessionCounterRow('LEVE', _formatSeconds(leveSec), const Color(0xFF2E7D32)),
+                      _buildSessionCounterRow('MODERADO', _formatSeconds(modSec), const Color(0xFFD27800)),
+                      _buildSessionCounterRow('GRAVE', _formatSeconds(graveSec), const Color(0xFFC81414)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+
+            const Divider(height: 20),
+
+            Wrap(
+              spacing: 12,
+              runSpacing: 6,
+              alignment: WrapAlignment.spaceBetween,
+              children: [
+                _buildSimpleSummaryTag('Sin temblor:', _formatSeconds(sinTemblorSec), const Color(0xFFE0E0E0)),
+                _buildSimpleSummaryTag('Voluntario:', _formatSeconds(volSec), const Color(0xFF1E5AC8)),
+              ],
+            ),
+
+            const SizedBox(height: 10),
+
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.purple.shade50,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                'Tiempo con temblor: ${tremorPct.toStringAsFixed(1)}% de la sesión',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.purple),
+              ),
+            ),
+
+            const SizedBox(height: 10),
+
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildSummaryBadge('Duty Cycle', '$dutyPct%', Icons.pie_chart_outline, Colors.teal),
+                _buildSummaryBadge('Episodios', '${provider.episodeCount}', Icons.countertops, Colors.redAccent),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSimpleSummaryTag(String label, String value, Color color) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        const SizedBox(width: 4),
+        Text(label, style: const TextStyle(fontSize: 11, color: Colors.black54)),
+        const SizedBox(width: 4),
+        Text(value, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black87)),
+      ],
+    );
+  }
+
+  Widget _buildSessionCounterRow(String label, String timeStr, Color color) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+              const SizedBox(width: 6),
+              Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+            ],
+          ),
+          Text(timeStr, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: color)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSummaryBadge(String label, String value, IconData icon, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 4),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: const TextStyle(fontSize: 9, color: Colors.black54)),
+              Text(value, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatSeconds(double seconds) {
+    final totalSec = seconds.toInt();
+    final mins = totalSec ~/ 60;
+    final secs = totalSec % 60;
+    if (mins > 0) {
+      return '${mins}m ${secs}s';
+    }
+    return '${secs}s';
   }
 
   Widget _buildCsvCaptureCard(TremorProvider provider) {
@@ -361,7 +1375,7 @@ class TremorChartScreen extends StatelessWidget {
       elevation: 4,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       child: Padding(
-        padding: const EdgeInsets.all(20.0),
+        padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -371,11 +1385,11 @@ class TremorChartScreen extends StatelessWidget {
                 const SizedBox(width: 10),
                 const Text(
                   'Captura RAWFIFO (MATLAB)',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                 ),
               ],
             ),
-            const SizedBox(height: 15),
+            const SizedBox(height: 10),
             if (isCapturing) ...[
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -384,7 +1398,7 @@ class TremorChartScreen extends StatelessWidget {
                   _buildMiniStat("Perdidas", "${status?.lost}", color: Colors.red),
                 ],
               ),
-              const SizedBox(height: 15),
+              const SizedBox(height: 10),
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
@@ -400,9 +1414,9 @@ class TremorChartScreen extends StatelessWidget {
             ] else ...[
               const Text(
                 "Inicia una sesión para generar archivos CSV compatibles con MATLAB.",
-                style: TextStyle(fontSize: 13, color: Colors.black54),
+                style: TextStyle(fontSize: 11, color: Colors.black54),
               ),
-              const SizedBox(height: 15),
+              const SizedBox(height: 10),
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
@@ -419,13 +1433,13 @@ class TremorChartScreen extends StatelessWidget {
               ),
             ],
             if (status != null && !isCapturing && status.csvPath != null) ...[
-              const SizedBox(height: 15),
+              const SizedBox(height: 10),
               const Divider(),
               const Text(
                 "Última sesión guardada:",
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
               ),
-              const SizedBox(height: 5),
+              const SizedBox(height: 4),
               Row(
                 children: [
                   Expanded(
@@ -456,11 +1470,11 @@ class TremorChartScreen extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: const TextStyle(fontSize: 11, color: Colors.black54)),
+        Text(label, style: const TextStyle(fontSize: 10, color: Colors.black54)),
         Text(
           value,
           style: TextStyle(
-            fontSize: 16,
+            fontSize: 14,
             fontWeight: FontWeight.bold,
             color: color ?? Colors.black87,
           ),
@@ -469,70 +1483,18 @@ class TremorChartScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildWeeklyDemoSection() {
-    // Mantengo esta sección como referencia histórica/demo solicitada en el original
-    final List<double> demoData = [3.2, 4.5, 3.8, 7.2, 5.1, 4.2, 2.5];
-    final List<String> days = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
-
-    return Card(
-      elevation: 4,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      child: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Evolución del temblor',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.purple),
-            ),
-            const Text('Últimos 7 días', style: TextStyle(fontSize: 14, color: Colors.black54)),
-            const SizedBox(height: 30),
-            SizedBox(
-              height: 150,
-              child: BarChart(
-                BarChartData(
-                  alignment: BarChartAlignment.spaceAround,
-                  maxY: 10,
-                  barTouchData: BarTouchData(enabled: true),
-                  titlesData: FlTitlesData(
-                    show: true,
-                    bottomTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        getTitlesWidget: (value, meta) {
-                          if (value.toInt() >= 0 && value.toInt() < days.length) {
-                            return Text(days[value.toInt()], style: const TextStyle(fontSize: 10));
-                          }
-                          return const Text('');
-                        },
-                      ),
-                    ),
-                    leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 30)),
-                    topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  ),
-                  gridData: const FlGridData(show: false),
-                  borderData: FlBorderData(show: false),
-                  barGroups: demoData.asMap().entries.map((e) {
-                    return BarChartGroupData(
-                      x: e.key,
-                      barRods: [
-                        BarChartRodData(
-                          toY: e.value,
-                          color: e.value > 6 ? Colors.red.shade400 : Colors.lightGreen.shade400,
-                          width: 12,
-                          borderRadius: BorderRadius.circular(4),
-                        )
-                      ],
-                    );
-                  }).toList(),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+  Color _getTremorClassColor(TremorClass tremorClass) {
+    switch (tremorClass) {
+      case TremorClass.sinTemblor:
+        return const Color(0xFFE0E0E0); // Gris claro
+      case TremorClass.leve:
+        return const Color(0xFF2E7D32); // Verde
+      case TremorClass.moderado:
+        return const Color(0xFFD27800); // Naranja
+      case TremorClass.grave:
+        return const Color(0xFFC81414); // Rojo
+      case TremorClass.voluntario:
+        return const Color(0xFF1E5AC8); // Azul
+    }
   }
 }
