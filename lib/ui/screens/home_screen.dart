@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../../services/firebase_service.dart';
+import '../../services/voice_assistant_service.dart';
+import '../widgets/assistant_button.dart';
 import 'tremor_chart_screen.dart';
 import 'medication_screen.dart';
 import 'habits_screen.dart';
@@ -143,139 +145,339 @@ class HomeScreen extends StatelessWidget {
           ),
         ),
       ),
-      floatingActionButton: const _AssistantButton(),
+      floatingActionButton: const AssistantFloatingButton(),
     );
   }
 }
 
-class _AssistantButton extends StatelessWidget {
-  const _AssistantButton();
+void showAssistantModal(BuildContext context) {
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (context) => const AssistantModal(),
+  );
+}
+
+class AssistantModal extends StatefulWidget {
+  const AssistantModal({super.key});
+
+  @override
+  State<AssistantModal> createState() => _AssistantModalState();
+}
+
+class _AssistantModalState extends State<AssistantModal> {
+  final VoiceAssistantService _voiceService = VoiceAssistantService();
+
+  bool _isListening = false;
+  bool _isProcessing = false;
+  String _userText = '';
+  String _assistantText = '';
+  String _statusMessage = 'Inicializando micrófono...';
+
+  @override
+  void initState() {
+    super.initState();
+    _initAndListen();
+  }
+
+  Future<void> _initAndListen() async {
+    setState(() {
+      _isListening = false;
+      _isProcessing = false;
+      _userText = '';
+      _assistantText = '';
+      _statusMessage = 'Inicializando servicio de voz...';
+    });
+
+    final bool success = await _voiceService.initialize(
+      onError: (msg) {
+        if (mounted) {
+          setState(() {
+            _isListening = false;
+            _statusMessage = 'Error de micrófono o permiso denegado.';
+          });
+        }
+      },
+    );
+
+    if (!success) {
+      if (mounted) {
+        setState(() {
+          _isListening = false;
+          _statusMessage = 'No se pudo iniciar el servicio de voz.';
+        });
+      }
+      return;
+    }
+
+    _startListeningSession();
+  }
+
+  Future<void> _startListeningSession() async {
+    if (!mounted) return;
+    setState(() {
+      _isListening = true;
+      _isProcessing = false;
+      _userText = '';
+      _assistantText = '';
+      _statusMessage = 'Te escucho... Habla ahora.';
+    });
+
+    await _voiceService.listen(
+      duration: const Duration(seconds: 15),
+      onResult: (recognizedWords, isFinal) {
+        if (!mounted) return;
+        setState(() {
+          _userText = recognizedWords;
+        });
+
+        if (isFinal && recognizedWords.trim().isNotEmpty) {
+          _handleFinalRecognizedSpeech(recognizedWords);
+        }
+      },
+    );
+  }
+
+  Future<void> _handleFinalRecognizedSpeech(String text) async {
+    await _voiceService.stopListening();
+    if (!mounted) return;
+
+    setState(() {
+      _isListening = false;
+      _isProcessing = true;
+      _statusMessage = 'Procesando respuesta con Emki IA...';
+    });
+
+    final response = await _voiceService.processPrompt(text);
+
+    if (!mounted) return;
+
+    setState(() {
+      _isProcessing = false;
+      _assistantText = response.textResponse;
+      _statusMessage = response.action != AppVoiceAction.none
+          ? 'Sección abierta. Asistente activo.'
+          : 'Respuesta generada.';
+    });
+
+    if (response.action != AppVoiceAction.none) {
+      _navigateToTargetSection(response.action);
+    }
+  }
+
+  void _navigateToTargetSection(AppVoiceAction action) {
+    if (!mounted) return;
+
+    Widget targetScreen;
+    switch (action) {
+      case AppVoiceAction.openTremor:
+        targetScreen = const TremorChartScreen();
+        break;
+      case AppVoiceAction.openMedication:
+        targetScreen = const MedicationScreen();
+        break;
+      case AppVoiceAction.openHabits:
+      case AppVoiceAction.openHabitsFood:
+        targetScreen = const HabitsScreen(initialTabIndex: 0);
+        break;
+      case AppVoiceAction.openHabitsActivity:
+        targetScreen = const HabitsScreen(initialTabIndex: 1);
+        break;
+      case AppVoiceAction.openCommunity:
+        targetScreen = const CommunityScreen();
+        break;
+      case AppVoiceAction.openProfile:
+        targetScreen = const ProfileScreen();
+        break;
+      case AppVoiceAction.none:
+        return;
+    }
+
+    // Push the target screen without popping the assistant modal.
+    // This allows the user to see the section underneath while the assistant
+    // continues speaking and displaying its reply on top without cutting off.
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => targetScreen),
+    );
+  }
+
+  @override
+  void dispose() {
+    _voiceService.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          margin: const EdgeInsets.only(bottom: 12),
-          decoration: BoxDecoration(
+    final mediaQuery = MediaQuery.of(context);
+    final bottomInset = mediaQuery.viewInsets.bottom;
+
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(bottom: bottomInset),
+        child: Container(
+          constraints: BoxConstraints(
+            maxHeight: mediaQuery.size.height * 0.6,
+          ),
+          decoration: const BoxDecoration(
             color: Colors.white,
-            borderRadius: BorderRadius.circular(20),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.1),
-                blurRadius: 8,
-                offset: const Offset(0, 4),
-              )
-            ],
+            borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
           ),
-          child: const Text(
-            '¿Necesitas ayuda?',
-            style: TextStyle(
-              color: Color(0xFF6A1B9A),
-              fontWeight: FontWeight.bold,
-              fontSize: 14,
-            ),
-          ),
-        ),
-        FloatingActionButton(
-          onPressed: () => _showAssistantModal(context),
-          backgroundColor: const Color(0xFF6A1B9A),
-          elevation: 6,
-          child: const Icon(Icons.mic_rounded, size: 32, color: Colors.white),
-        ),
-      ],
-    );
-  }
-
-  void _showAssistantModal(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => const _AssistantModal(),
-    );
-  }
-}
-
-class _AssistantModal extends StatefulWidget {
-  const _AssistantModal();
-
-  @override
-  State<_AssistantModal> createState() => _AssistantModalState();
-}
-
-class _AssistantModalState extends State<_AssistantModal> {
-  bool _isListening = true;
-  final String _text = 'Escuchando...';
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.4,
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
-      ),
-      padding: const EdgeInsets.all(30),
-      child: Column(
-        children: [
-          Container(
-            width: 40,
-            height: 5,
-            decoration: BoxDecoration(
-              color: Colors.grey.shade300,
-              borderRadius: BorderRadius.circular(10),
-            ),
-          ),
-          const SizedBox(height: 30),
-          const Text(
-            'Asistente de Voz',
-            style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF6A1B9A),
-            ),
-          ),
-          const SizedBox(height: 20),
-          Expanded(
-            child: Center(
-              child: Text(
-                _text,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 18,
-                  color: Colors.black54,
-                  fontStyle: FontStyle.italic,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 20),
-          _ListeningIndicator(isListening: _isListening),
-          const SizedBox(height: 30),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('CANCELAR', style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
-              ),
-              if (!_isListening)
-                ElevatedButton(
-                  onPressed: () => setState(() => _isListening = true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6A1B9A),
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-                  ),
-                  child: const Text('REINTENTAR'),
+              Container(
+                width: 40,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(10),
                 ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.auto_awesome, color: Color(0xFF6A1B9A), size: 24),
+                      SizedBox(width: 8),
+                      Text(
+                        'Asistente Emki Care',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF6A1B9A),
+                        ),
+                      ),
+                    ],
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, color: Colors.grey),
+                    onPressed: () {
+                      _voiceService.stopListening();
+                      _voiceService.stopSpeaking();
+                      Navigator.of(context).pop();
+                    },
+                  ),
+                ],
+              ),
+              Text(
+                _statusMessage,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 13, color: Colors.purple, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 10),
+              Flexible(
+                child: SingleChildScrollView(
+                  physics: const BouncingScrollPhysics(),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_userText.isNotEmpty)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.purple.shade50,
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Icon(Icons.person, size: 20, color: Colors.purple),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  _userText,
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    color: Colors.black87,
+                                    fontStyle: FontStyle.italic,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      if (_isProcessing)
+                        const Padding(
+                          padding: EdgeInsets.all(12.0),
+                          child: CircularProgressIndicator(color: Color(0xFF6A1B9A)),
+                        ),
+                      if (_assistantText.isNotEmpty)
+                        Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: Colors.lightGreen.shade50,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: Colors.lightGreen.shade200),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Icon(Icons.support_agent_rounded, size: 24, color: Colors.green),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  _assistantText,
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    color: Colors.black87,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              if (_isListening) _ListeningIndicator(isListening: _isListening),
+              const SizedBox(height: 12),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        _voiceService.stopListening();
+                        _voiceService.stopSpeaking();
+                        Navigator.of(context).pop();
+                      },
+                      icon: const Icon(Icons.close, size: 18),
+                      label: const Text('CERRAR'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.grey.shade700,
+                        side: BorderSide(color: Colors.grey.shade300),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    if (!_isListening && !_isProcessing)
+                      ElevatedButton.icon(
+                        onPressed: _startListeningSession,
+                        icon: const Icon(Icons.mic, size: 20),
+                        label: const Text('HABLAR DE NUEVO'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF6A1B9A),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }

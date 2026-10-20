@@ -3,6 +3,7 @@ import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import '../../services/firebase_service.dart';
 import '../../models/user_profile.dart';
+import '../widgets/assistant_button.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -223,6 +224,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
         ),
       ),
+      floatingActionButton: const AssistantFloatingButton(),
     );
   }
 

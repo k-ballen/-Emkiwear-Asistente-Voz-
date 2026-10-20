@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../services/firebase_service.dart';
 import '../../models/user_profile.dart';
+import '../widgets/assistant_button.dart';
 
 class CommunityScreen extends StatefulWidget {
   const CommunityScreen({super.key});
@@ -69,17 +70,26 @@ class _CommunityScreenState extends State<CommunityScreen> with SingleTickerProv
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          setState(() => _isPublic = !_isPublic);
-          _firebaseService.updatePrivacy(_isPublic);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(_isPublic ? 'Tu perfil ahora es público' : 'Tu perfil ahora es privado')),
-          );
-        },
-        backgroundColor: _isPublic ? Colors.green : Colors.grey,
-        icon: Icon(_isPublic ? Icons.visibility : Icons.visibility_off),
-        label: Text(_isPublic ? 'Público' : 'Privado'),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          const AssistantFloatingButton(),
+          const SizedBox(height: 12),
+          FloatingActionButton.extended(
+            heroTag: 'privacy_btn',
+            onPressed: () {
+              setState(() => _isPublic = !_isPublic);
+              _firebaseService.updatePrivacy(_isPublic);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(_isPublic ? 'Tu perfil ahora es público' : 'Tu perfil ahora es privado')),
+              );
+            },
+            backgroundColor: _isPublic ? Colors.green : Colors.grey,
+            icon: Icon(_isPublic ? Icons.visibility : Icons.visibility_off),
+            label: Text(_isPublic ? 'Público' : 'Privado'),
+          ),
+        ],
       ),
     );
   }

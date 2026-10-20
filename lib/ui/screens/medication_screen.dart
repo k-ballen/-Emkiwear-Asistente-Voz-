@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:table_calendar/table_calendar.dart';
 import '../../services/firebase_service.dart';
 import '../../models/medication_task.dart';
+import '../widgets/assistant_button.dart';
 
 class MedicationScreen extends StatefulWidget {
   const MedicationScreen({super.key});
@@ -287,6 +288,7 @@ class _MedicationScreenState extends State<MedicationScreen> {
           ],
         ),
       ),
+      floatingActionButton: const AssistantFloatingButton(),
     );
   }
 

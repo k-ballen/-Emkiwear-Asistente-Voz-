@@ -3,9 +3,12 @@ import 'package:intl/intl.dart';
 import '../../services/firebase_service.dart';
 import '../../models/food_habit.dart';
 import '../../models/activity_habit.dart';
+import '../widgets/assistant_button.dart';
 
 class HabitsScreen extends StatefulWidget {
-  const HabitsScreen({super.key});
+  final int initialTabIndex;
+
+  const HabitsScreen({super.key, this.initialTabIndex = 0});
 
   @override
   State<HabitsScreen> createState() => _HabitsScreenState();
@@ -19,7 +22,11 @@ class _HabitsScreenState extends State<HabitsScreen> with SingleTickerProviderSt
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(
+      length: 2,
+      vsync: this,
+      initialIndex: widget.initialTabIndex.clamp(0, 1),
+    );
   }
 
   @override
@@ -61,6 +68,7 @@ class _HabitsScreenState extends State<HabitsScreen> with SingleTickerProviderSt
           ],
         ),
       ),
+      floatingActionButton: const AssistantFloatingButton(),
     );
   }
 }

@@ -147,7 +147,25 @@ class TremorProvider with ChangeNotifier {
   DateTime? _lastStatusTime;
   DateTime? _analyzingStartTime;
   bool _isDataTimeout = false;
+  bool _yaHayResultado = false;
   Timer? _timeoutCheckTimer;
+
+  // Últimos valores válidos recibidos (con < 3s de antigüedad)
+  double? _lastValidDomFreq;
+  DateTime? _lastValidDomFreqTime;
+  double? _lastValidAngDeg;
+  DateTime? _lastValidAngDegTime;
+  double? _lastValidDesplazCm;
+  DateTime? _lastValidDesplazCmTime;
+
+  void _clearLastValidMetrics() {
+    _lastValidDomFreq = null;
+    _lastValidDomFreqTime = null;
+    _lastValidAngDeg = null;
+    _lastValidAngDegTime = null;
+    _lastValidDesplazCm = null;
+    _lastValidDesplazCmTime = null;
+  }
 
   // Historial de muestras de velocidad para gráfica (50 muestras)
   final List<TremorSample> _history = [];
@@ -205,6 +223,7 @@ class TremorProvider with ChangeNotifier {
   bool get isStreaming => _isStreaming;
   bool get isRawUploadEnabled => _isRawUploadEnabled;
   bool get isDataTimeout => _isDataTimeout;
+  bool get yaHayResultado => _yaHayResultado;
   List<TremorSample> get history => _history;
   List<TremorStatus> get timeline => List.unmodifiable(_timeline);
   List<DebugPacketRecord> get debugRecords => List.unmodifiable(_debugRecords);
@@ -225,15 +244,58 @@ class TremorProvider with ChangeNotifier {
     return major < 2;
   }
 
-  // Progreso de análisis (0.0 a 1.0 durante 9s, o -1.0 si es indeterminado tras 9s)
+  // Progreso de análisis (0.0 a 1.0 durante ~11s, o -1.0 si es indeterminado tras 11s)
   double get analyzingProgress {
     if (_lastStatus == null || _lastStatus!.isAnalyzing) {
       if (_analyzingStartTime == null) return 0.0;
       final elapsedMs = DateTime.now().difference(_analyzingStartTime!).inMilliseconds;
-      if (elapsedMs >= 9000) return -1.0;
-      return (elapsedMs / 9000.0).clamp(0.0, 1.0);
+      if (elapsedMs >= 11000) return -1.0;
+      return (elapsedMs / 11000.0).clamp(0.0, 1.0);
     }
     return 0.0;
+  }
+
+  // Getters para métricas con fallback a últimos valores válidos (< 3s)
+  String get validDomFreqDisplay {
+    if (_lastStatus != null && _lastStatus!.domFreq > 0) {
+      return "${_lastStatus!.domFreq.toStringAsFixed(1)} Hz";
+    }
+    if (_lastValidDomFreq != null && _lastValidDomFreqTime != null) {
+      if (DateTime.now().difference(_lastValidDomFreqTime!).inMilliseconds < 3000) {
+        return "${_lastValidDomFreq!.toStringAsFixed(1)} Hz";
+      }
+    }
+    return "—";
+  }
+
+  String get validAngDegDisplay {
+    if (_lastExt != null && _lastExt!.angDeg > 0) {
+      return "${_lastExt!.angDeg.toStringAsFixed(2)}°";
+    }
+    if (_lastSev != null && _lastSev!.thetaDeg > 0) {
+      return "${_lastSev!.thetaDeg.toStringAsFixed(2)}°";
+    }
+    if (_lastValidAngDeg != null && _lastValidAngDegTime != null) {
+      if (DateTime.now().difference(_lastValidAngDegTime!).inMilliseconds < 3000) {
+        return "${_lastValidAngDeg!.toStringAsFixed(2)}°";
+      }
+    }
+    return "—";
+  }
+
+  String get validDesplazDisplay {
+    if (_lastSev != null && _lastSev!.desplazCm > 0) {
+      return "${_lastSev!.desplazCm.toStringAsFixed(1)} cm";
+    }
+    if (_lastExt != null && _lastExt!.angDeg > 0) {
+      return "${(_lastExt!.angDeg * 0.2618).toStringAsFixed(1)} cm";
+    }
+    if (_lastValidDesplazCm != null && _lastValidDesplazCmTime != null) {
+      if (DateTime.now().difference(_lastValidDesplazCmTime!).inMilliseconds < 3000) {
+        return "${_lastValidDesplazCm!.toStringAsFixed(1)} cm";
+      }
+    }
+    return "—";
   }
 
   // Contadores de sesión
@@ -254,7 +316,7 @@ class TremorProvider with ChangeNotifier {
 
     _timeoutCheckTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
       if (_lastStatusTime != null &&
-          DateTime.now().difference(_lastStatusTime!).inSeconds >= 2) {
+          DateTime.now().difference(_lastStatusTime!).inSeconds >= 3) {
         if (!_isDataTimeout) {
           _isDataTimeout = true;
           notifyListeners();
@@ -278,20 +340,39 @@ class TremorProvider with ChangeNotifier {
 
     _repository.statusStream.listen((status) {
       if (!_isStreaming) return;
+
+      if (!_yaHayResultado) {
+        if (!status.isAnalyzing) {
+          _yaHayResultado = true;
+          _analyzingStartTime = null;
+        } else {
+          _analyzingStartTime ??= DateTime.now();
+        }
+      } else {
+        if (status.isAnalyzing) {
+          return;
+        }
+      }
+
       _lastStatus = status;
       _lastStatusTime = DateTime.now();
       _isDataTimeout = false;
 
-      if (status.isAnalyzing) {
-        _analyzingStartTime ??= DateTime.now();
-      } else {
-        _analyzingStartTime = null;
+      if (status.tremorClass == TremorClass.sinTemblor ||
+          status.tremorClass == TremorClass.voluntario) {
+        _clearLastValidMetrics();
+      } else if (status.tremorClass == TremorClass.leve ||
+                 status.tremorClass == TremorClass.moderado ||
+                 status.tremorClass == TremorClass.grave) {
+        if (status.domFreq > 0) {
+          _lastValidDomFreq = status.domFreq;
+          _lastValidDomFreqTime = DateTime.now();
+        }
       }
 
       _timeline.add(status);
       if (_timeline.length > maxTimeline) _timeline.removeAt(0);
 
-      // // reemplazado: la clase viene del reloj
       if (!status.isAnalyzing) {
         switch (status.tremorClass) {
           case TremorClass.sinTemblor:
@@ -311,16 +392,19 @@ class TremorProvider with ChangeNotifier {
             break;
         }
 
-        // Detección de incoherencias (bit2 == 1 && clase == 4)
         if (status.detected && status.tremorClass == TremorClass.voluntario) {
           _incoherenceCount++;
         }
 
-        // Episodios cuentan solo cuando confirmado == true (bit0)
-        if (status.tremorPresent && !_prevConfirmed) {
+        final bool isTremorActive = status.tremorPresent &&
+            (status.tremorClass == TremorClass.leve ||
+             status.tremorClass == TremorClass.moderado ||
+             status.tremorClass == TremorClass.grave);
+
+        if (isTremorActive && !_prevConfirmed) {
           _episodeCount++;
         }
-        _prevConfirmed = status.tremorPresent;
+        _prevConfirmed = isTremorActive;
       }
 
       _recordDebugStatus(status);
@@ -335,6 +419,16 @@ class TremorProvider with ChangeNotifier {
       _lastExt = ext;
       _recordDebugExt(ext);
 
+      if (_lastStatus != null &&
+          (_lastStatus!.tremorClass == TremorClass.leve ||
+           _lastStatus!.tremorClass == TremorClass.moderado ||
+           _lastStatus!.tremorClass == TremorClass.grave)) {
+        if (ext.angDeg > 0) {
+          _lastValidAngDeg = ext.angDeg;
+          _lastValidAngDegTime = DateTime.now();
+        }
+      }
+
       if (_lastStatus != null && !_lastStatus!.isAnalyzing) {
         _processExtForBucket(ext);
       }
@@ -345,6 +439,15 @@ class TremorProvider with ChangeNotifier {
     _repository.sevStream.listen((sev) {
       if (!_isStreaming) return;
       _lastSev = sev;
+      if (_lastStatus != null &&
+          (_lastStatus!.tremorClass == TremorClass.leve ||
+           _lastStatus!.tremorClass == TremorClass.moderado ||
+           _lastStatus!.tremorClass == TremorClass.grave)) {
+        if (sev.desplazCm > 0) {
+          _lastValidDesplazCm = sev.desplazCm;
+          _lastValidDesplazCmTime = DateTime.now();
+        }
+      }
       notifyListeners();
     });
 
@@ -414,6 +517,8 @@ class TremorProvider with ChangeNotifier {
           _lastSev = null;
           _lastDiag = null;
           _analyzingStartTime = null;
+          _yaHayResultado = false;
+          _clearLastValidMetrics();
           _gyroFilter.reset();
           _accelFilter.reset();
         } else if (_connectionState == BluetoothConnectionState.connected) {
@@ -421,7 +526,9 @@ class TremorProvider with ChangeNotifier {
           _lastExt = null;
           _lastSev = null;
           _lastDiag = null;
-          _analyzingStartTime = null;
+          _analyzingStartTime = DateTime.now();
+          _yaHayResultado = false;
+          _clearLastValidMetrics();
           resetSessionCounters();
         }
         notifyListeners();
