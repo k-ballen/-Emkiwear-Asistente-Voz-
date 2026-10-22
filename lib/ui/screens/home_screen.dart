@@ -294,12 +294,20 @@ class _AssistantModalState extends State<AssistantModal> {
         return;
     }
 
-    // Clear any previous screens pushed by the assistant, keeping HomeScreen at root
-    // so pressing the Back button ONCE always returns directly to the main menu.
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => targetScreen),
-      (route) => route.isFirst,
-    );
+    final currentRoute = ModalRoute.of(context);
+    if (currentRoute == null) return;
+
+    final navigator = Navigator.of(context);
+    final newRoute = MaterialPageRoute(builder: (_) => targetScreen);
+
+    try {
+      // Insert the target screen directly BELOW the active Assistant Modal.
+      // This keeps the modal open, preserves the TTS audio speech without cutting off,
+      // and updates the underlying UI seamlessly.
+      navigator.pushBelow(anchorRoute: currentRoute, newRoute: newRoute);
+    } catch (_) {
+      navigator.push(newRoute);
+    }
   }
 
   @override
