@@ -187,8 +187,14 @@ INSTRUCCIONES Y REGLAS DE EXTRACCIÓN DE ENTIDADES (NER):
 1. EXTRACCIÓN LIMPIA DE ATRIBUTOS (CRÍTICO):
    - `name` (Medicamento): Extrae ÚNICAMENTE el nombre propio o marca del medicamento. NUNCA incluyas palabras como "pastilla", "pastilla de", "medicina", "dosis", "remedio", ni horas ("6 de la mañana", "a las 8").
      Ejemplo: "Pastilla de doble hexa a las 6 am" -> name="Doble hexa", time="06:00"
-   - `food` (Alimentación): Extrae ÚNICAMENTE el nombre limpio del alimento sin categorías ("de desayuno", "de almuerzo", "de cena") ni horas.
-     Ejemplo: "Cereal de desayuno a las 7" -> food="Cereal", mealType="Desayuno", time="07:00"
+
+   - `food` (Alimentación): Extrae ÚNICAMENTE el nombre limpio del alimento sin verbos ("desayuné", "almorcé", "cené", "comí"), ni categorías ("registra mi desayuno de", "mi desayuno de", "de desayuno", "de almuerzo", "de cena"), ni horas.
+     Ejemplos:
+     - "desayuné avena trasnochada" -> food="Avena trasnochada", mealType="Desayuno", time="$formattedNow"
+     - "registra mi desayuno de avena trasnochada" -> food="Avena trasnochada", mealType="Desayuno", time="$formattedNow"
+     - "almorcé seco de pollo a las 1" -> food="Seco de pollo", mealType="Almuerzo", time="13:00"
+     - "cené sopa de verduras" -> food="Sopa de verduras", mealType="Cena", time="$formattedNow"
+
    - `activityType` (Ejercicio): Extrae ÚNICAMENTE el nombre del ejercicio sin palabras como "clase de", "sesión de", "hacer", ni horas ("6 de la mañana").
      Ejemplo: "Pilates 6 de la mañana" -> activityType="Pilates", time="06:00"
 
@@ -435,15 +441,24 @@ Mensaje del usuario: "$cleanPrompt"
       return 'Registré la toma de $itemName a las $formattedTime. [ACTION:OPEN_MEDICATION]';
     }
 
-    if (lower.contains('comí') || lower.contains('comi') || lower.contains('desayuné') || lower.contains('almorcé') || lower.contains('cené') || lower.contains('arroz')) {
+    if (lower.contains('comí') ||
+        lower.contains('comi') ||
+        lower.contains('desayuné') ||
+        lower.contains('desayune') ||
+        lower.contains('almorcé') ||
+        lower.contains('almorce') ||
+        lower.contains('cené') ||
+        lower.contains('cene') ||
+        lower.contains('desayuno') ||
+        lower.contains('almuerzo') ||
+        lower.contains('cena') ||
+        lower.contains('merienda') ||
+        lower.contains('comida') ||
+        lower.contains('alimento') ||
+        lower.contains('arroz')) {
       final foodName = _cleanEntityName(prompt);
       final mealType = _normalizeMealType(prompt);
-      final explicitTime = _extractExplicitTimeFromPrompt(prompt);
-
-      if (explicitTime == null) {
-        _pendingContext = PendingVoiceContext(category: 'food', step: StepState.itemNameExtracted, itemName: foodName, mealType: mealType);
-        return '¿A qué hora comiste $foodName?';
-      }
+      final explicitTime = _extractExplicitTimeFromPrompt(prompt) ?? 'NOW';
 
       final eventDateTime = _resolveEventDateTime(explicitTime, now);
       final timeOfDay = TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
@@ -451,7 +466,7 @@ Mensaje del usuario: "$cleanPrompt"
 
       await _firebaseService.logFoodHabit(foodName, mealType, eventDateTime, timeOfDay);
       _pendingContext = null;
-      return 'Registré $foodName a las $formattedTime. [ACTION:OPEN_HABITS_FOOD]';
+      return 'Registré tu $mealType ($foodName) a las $formattedTime. [ACTION:OPEN_HABITS_FOOD]';
     }
 
     if (lower.contains('caminata') ||
@@ -505,9 +520,9 @@ Mensaje del usuario: "$cleanPrompt"
   String _cleanEntityName(String raw) {
     var s = raw.trim();
 
-    // 1. Remove leading conversational noise, verbs, politeness, category words, and articles
+    // 1. Remove leading conversational noise, verbs, meal prefixes, politeness, category words, and articles
     final leadingNoise = RegExp(
-      r'^(hola|por favor|buenas|buenos días|buenas tardes|porfa|me gustaría|quisiera|quiero|necesito|puedes|registra que|registra|registrar|me tomé|me tome|ya tomé|ya tome|tomé|tome|tomar|me comí|me comi|ya comí|ya comi|comí|comi|comer|hice|hacer|fui a|fui|realicé|realice|acabo de|mi|mis|el|la|los|las|un|una|unos|unas|medicamento|alimento|comida|ejercicio|actividad|pastilla de|pastillas de|pastilla|pastillas|medicina de|medicina|remedio de|remedio|dosis de|dosis|toma de|toma|clase de|sesión de|sesion de|de)\s+',
+      r'^(hola|por favor|buenas|buenos días|buenas tardes|porfa|me gustaría|quisiera|quiero|necesito|puedes|registra mi desayuno de|registra mi desayuno|registra mi almuerzo de|registra mi almuerzo|registra mi cena de|registra mi cena|registra mi comida de|registra mi comida|registra mi alimento de|registra mi alimento|registra que|registra|registrar|desayuné|desayune|almorcé|almorce|cené|cene|me tomé|me tome|ya tomé|ya tome|tomé|tome|tomar|me comí|me comi|ya comí|ya comi|comí|comi|comer|hice|hacer|fui a|fui|realicé|realice|acabo de|mi desayuno de|mi desayuno|mi almuerzo de|mi almuerzo|mi cena de|mi cena|mi comida de|mi comida|mi alimento de|mi alimento|desayuno de|desayuno|almuerzo de|almuerzo|cena de|cena|merienda de|merienda|mi|mis|el|la|los|las|un|una|unos|unas|medicamento|alimento|comida|ejercicio|actividad|pastilla de|pastillas de|pastilla|pastillas|medicina de|medicina|remedio de|remedio|dosis de|dosis|toma de|toma|clase de|sesión de|sesion de|de)\s+',
       caseSensitive: false,
     );
 
