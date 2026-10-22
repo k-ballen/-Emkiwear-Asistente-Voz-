@@ -182,34 +182,38 @@ HORA DE REFERENCIA DEL DISPOSITIVO: $formattedNow
 ESTADO CONVERSACIONAL PREVIO ACTIVO:
 ${_pendingContext != null ? _pendingContext!.toPromptContext() : "Sin contexto previo activo."}
 
-INSTRUCCIONES Y REGLAS DE EXTRACCIÓN DE ENTIDADES (NER):
+REGLAS OBLIGATORIAS DE EXTRACCIÓN Y PREGUNTA DE HORA:
 
-1. EXTRACCIÓN LIMPIA DE ATRIBUTOS (CRÍTICO):
-   - `name` (Medicamento): Extrae ÚNICAMENTE el nombre propio o marca del medicamento. NUNCA incluyas palabras como "pastilla", "pastilla de", "medicina", "dosis", "remedio", ni horas ("6 de la mañana", "a las 8").
-     Ejemplo: "Pastilla de doble hexa a las 6 am" -> name="Doble hexa", time="06:00"
-
-   - `food` (Alimentación): Extrae ÚNICAMENTE el nombre limpio del alimento sin verbos ("desayuné", "almorcé", "cené", "comí"), ni categorías ("registra mi desayuno de", "mi desayuno de", "de desayuno", "de almuerzo", "de cena"), ni horas.
+1. REGLA FUNDAMENTAL SOBRE LA HORA (SI FALTA LA HORA -> PREGUNTAR):
+   - Si el usuario menciona el elemento (medicamento, alimento o ejercicio) PERO NO INDICA LA HORA NI REFERENCIA TEMPORAL (ej: "desayuné avena trasnochada", "tomé levodopa", "hice caminata"):
+     NO GENERES NINGUNA ETIQUETA DE REGISTRO `[REGISTER_...]`.
+     Responde cálidamente preguntando la hora del evento en 1 oración breve.
      Ejemplos:
-     - "desayuné avena trasnochada" -> food="Avena trasnochada", mealType="Desayuno", time="$formattedNow"
-     - "registra mi desayuno de avena trasnochada" -> food="Avena trasnochada", mealType="Desayuno", time="$formattedNow"
-     - "almorcé seco de pollo a las 1" -> food="Seco de pollo", mealType="Almuerzo", time="13:00"
-     - "cené sopa de verduras" -> food="Sopa de verduras", mealType="Cena", time="$formattedNow"
+     - "desayuné avena trasnochada" (sin hora) -> "¿A qué hora desayunaste Avena trasnochada? [ACTION:OPEN_HABITS_FOOD]"
+     - "tomé levodopa" (sin hora) -> "¿A qué hora te tomaste la Levodopa? [ACTION:OPEN_MEDICATION]"
+     - "hice caminata" (sin hora) -> "¿A qué hora realizaste la Caminata? [ACTION:OPEN_HABITS_ACTIVITY]"
 
-   - `activityType` (Ejercicio): Extrae ÚNICAMENTE el nombre del ejercicio sin palabras como "clase de", "sesión de", "hacer", ni horas ("6 de la mañana").
-     Ejemplo: "Pilates 6 de la mañana" -> activityType="Pilates", time="06:00"
+   - Si el usuario SÍ indica la hora (ej: "desayuné avena trasnochada a las 7 de la mañana" o responde "a las 7 am" tras la pregunta):
+     Genera la etiqueta de registro correspondiente con `time=HH:MM`.
 
-2. ETIQUETAS TÉCNICAS A GENERAR:
+2. EXTRACCIÓN PRECISA DE CATEGORÍA DE COMIDA (`mealType`):
+   - `food`: Extrae ÚNICAMENTE el nombre limpio del alimento sin verbos ("desayuné", "almorcé", "cené") ni categorías ("mi desayuno de", "de desayuno").
+   - `mealType`: Asigna con precisión la categoría adecuada:
+     * Si usa "desayuné" o "desayuno" -> `mealType="Desayuno"`
+     * Si usa "almorcé", "almuerzo" o "comida" -> `mealType="Almuerzo"`
+     * Si usa "cené" o "cena" -> `mealType="Cena"`
+     * Si usa "merienda" o "snack" -> `mealType="Merienda"`
+     * Si el verbo es general ("comí"), deduce según la hora: 05:00-11:00 (Desayuno), 11:01-16:00 (Almuerzo), 16:01-18:30 (Merienda), 18:31-04:59 (Cena).
+
+3. ETIQUETAS TÉCNICAS A GENERAR (SOLO CUANDO SE TENGA LA HORA):
    - MEDICAMENTOS: `[REGISTER_MEDICATION|name=NOMBRE_LIMPIO|time=HH:MM]` y `[ACTION:OPEN_MEDICATION]`
    - ALIMENTACIÓN: `[REGISTER_FOOD|food=NOMBRE_LIMPIO|mealType=Desayuno/Almuerzo/Cena/Merienda|time=HH:MM]` y `[ACTION:OPEN_HABITS_FOOD]`
    - ACTIVIDAD FÍSICA: `[REGISTER_ACTIVITY|activityType=NOMBRE_LIMPIO|duration=MINUTOS|intensity=Leve/Media/Alta|time=HH:MM]` y `[ACTION:OPEN_HABITS_ACTIVITY]`
 
-3. NAVEGACIÓN Y APRECIACIÓN CLÍNICA:
-   - Monitoreo de Temblor / Síntomas: `[ACTION:OPEN_TREMOR]`
-   - Comunidad / Apoyo: `[ACTION:OPEN_COMMUNITY]`
-   - Perfil de Usuario: `[ACTION:OPEN_PROFILE]`
-
-4. RESPUESTA AL USUARIO:
-   Responde siempre con 1 oración breve, cálida y empática confirmando la acción, e incluye al final las etiquetas técnicas correspondientes.
+4. NAVEGACIÓN Y RESPUESTA:
+   - Monitoreo de Temblor: `[ACTION:OPEN_TREMOR]`
+   - Comunidad: `[ACTION:OPEN_COMMUNITY]`
+   - Perfil: `[ACTION:OPEN_PROFILE]`
 
 Mensaje del usuario: "$cleanPrompt"
 ''';
@@ -302,10 +306,10 @@ Mensaje del usuario: "$cleanPrompt"
           final rawFood = params['food'] ?? params['name'] ?? params['item'] ?? 'Alimento';
           final food = _cleanEntityName(rawFood);
           final rawMealType = params['mealType'] ?? params['meal'] ?? food;
-          final mealType = _normalizeMealType(rawMealType);
           final timeStr = params['time'] ?? 'NOW';
           final eventDateTime = _resolveEventDateTime(timeStr, now);
           final eventTimeOfDay = TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
+          final mealType = _normalizeMealType(rawMealType, timeOfDay: eventTimeOfDay, fullPrompt: rawReply);
 
           await _firebaseService.logFoodHabit(food, mealType, eventDateTime, eventTimeOfDay);
           return _RegistrationResult(executed: true, cleanReply: rawReply);
@@ -457,16 +461,27 @@ Mensaje del usuario: "$cleanPrompt"
         lower.contains('alimento') ||
         lower.contains('arroz')) {
       final foodName = _cleanEntityName(prompt);
-      final mealType = _normalizeMealType(prompt);
-      final explicitTime = _extractExplicitTimeFromPrompt(prompt) ?? 'NOW';
+      final explicitTime = _extractExplicitTimeFromPrompt(prompt);
+      final initialMealType = _normalizeMealType(prompt, fullPrompt: prompt);
+
+      if (explicitTime == null) {
+        _pendingContext = PendingVoiceContext(
+          category: 'food',
+          step: StepState.itemNameExtracted,
+          itemName: foodName,
+          mealType: initialMealType,
+        );
+        return '¿A qué hora comiste $foodName? [ACTION:OPEN_HABITS_FOOD]';
+      }
 
       final eventDateTime = _resolveEventDateTime(explicitTime, now);
       final timeOfDay = TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
       final formattedTime = _formatTimeDisplay(timeOfDay);
+      final finalMealType = _normalizeMealType(initialMealType, timeOfDay: timeOfDay, fullPrompt: prompt);
 
-      await _firebaseService.logFoodHabit(foodName, mealType, eventDateTime, timeOfDay);
+      await _firebaseService.logFoodHabit(foodName, finalMealType, eventDateTime, timeOfDay);
       _pendingContext = null;
-      return 'Registré tu $mealType ($foodName) a las $formattedTime. [ACTION:OPEN_HABITS_FOOD]';
+      return 'Registré tu $finalMealType ($foodName) a las $formattedTime. [ACTION:OPEN_HABITS_FOOD]';
     }
 
     if (lower.contains('caminata') ||
@@ -626,13 +641,23 @@ Mensaje del usuario: "$cleanPrompt"
     }
   }
 
-  String _normalizeMealType(String raw) {
-    final lower = raw.toLowerCase();
-    if (lower.contains('desayuno')) return 'Desayuno';
-    if (lower.contains('almuerzo') || lower.contains('comida')) return 'Almuerzo';
-    if (lower.contains('cena')) return 'Cena';
-    if (lower.contains('merienda') || lower.contains('snack')) return 'Merienda';
-    return 'Almuerzo';
+  String _normalizeMealType(String raw, {TimeOfDay? timeOfDay, String? fullPrompt}) {
+    final combined = '${raw.toLowerCase()} ${(fullPrompt ?? '').toLowerCase()}';
+
+    if (combined.contains('desayun') || combined.contains('mañana')) return 'Desayuno';
+    if (combined.contains('almorz') || combined.contains('almuerzo') || combined.contains('comida')) return 'Almuerzo';
+    if (combined.contains('cen') || combined.contains('noche')) return 'Cena';
+    if (combined.contains('meriend') || combined.contains('snack')) return 'Merienda';
+
+    if (timeOfDay != null) {
+      final h = timeOfDay.hour;
+      if (h >= 5 && h <= 11) return 'Desayuno';
+      if (h > 11 && h <= 16) return 'Almuerzo';
+      if (h > 16 && h <= 18) return 'Merienda';
+      return 'Cena';
+    }
+
+    return 'Desayuno';
   }
 
   String _normalizeIntensity(String raw) {
