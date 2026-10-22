@@ -294,20 +294,11 @@ class _AssistantModalState extends State<AssistantModal> {
         return;
     }
 
-    final currentRoute = ModalRoute.of(context);
-    if (currentRoute == null) return;
-
-    final navigator = Navigator.of(context);
-    final newRoute = MaterialPageRoute(builder: (_) => targetScreen);
-
-    try {
-      // Insert the target screen directly BELOW the active Assistant Modal.
-      // This keeps the modal open, preserves the TTS audio speech without cutting off,
-      // and updates the underlying UI seamlessly.
-      navigator.pushBelow(anchorRoute: currentRoute, newRoute: newRoute);
-    } catch (_) {
-      navigator.push(newRoute);
-    }
+    // Push the target screen onto the Navigator stack without popping or disposing
+    // the AssistantModal. This preserves the TTS audio speech without cutting off.
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => targetScreen),
+    );
   }
 
   @override
