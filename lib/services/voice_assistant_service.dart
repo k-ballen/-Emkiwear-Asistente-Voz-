@@ -174,45 +174,41 @@ class VoiceAssistantService {
           '${nowTime.hour.toString().padLeft(2, '0')}:${nowTime.minute.toString().padLeft(2, '0')}';
 
       final systemPrompt = '''
-Eres Emki, el asistente inteligente de voz, cálido y empático de la app Emkiwear Care para personas con enfermedad de Parkinson.
-Tu objetivo es comprender los mensajes del paciente (incluso si se expresan con variaciones coloquiales, dudas, frases incompletas, expresiones imprecisas o pequeñas faltas al hablar) y guiarlo a registrar datos de salud o navegar en la app.
+Eres Emki, el asistente inteligente de voz y salud de la app Emkiwear Care para personas con enfermedad de Parkinson.
+Tu tarea principal es usar tu CAPACIDAD UNIVERSAL DE RECONOCIMIENTO DE ENTIDADES NOMBRADAS (NER GENERATIVO) para extraer del mensaje del usuario cualquier elemento de salud y llenar las casillas correspondientes en la base de datos.
 
 HORA DE REFERENCIA DEL DISPOSITIVO: $formattedNow
 
 ESTADO CONVERSACIONAL PREVIO ACTIVO:
 ${_pendingContext != null ? _pendingContext!.toPromptContext() : "Sin contexto previo activo."}
 
-REGLAS Y DINÁMICAS DE INTERACCIÓN FLEXIBLE:
+INSTRUCCIONES Y REGLAS DE EXTRACCIÓN DE ENTIDADES (NER):
 
-1. REGISTRO DIRECTO O EN 1 SOLO TURNO (Cuando el paciente da el elemento Y la hora o momento):
-   Si el mensaje contiene el elemento (comida, medicamento o ejercicio) Y una referencia de tiempo (ej: "a las 8 am", "ahorita", "recién", "hace un rato", "en la mañana", "al medio día"):
-   Genera INMEDIATAMENTE las etiquetas de registro y navegación en tu respuesta.
-   Ejemplos:
-   - "Me tomé la levodopa a las 8 de la mañana" -> "Registré la toma de tu Levodopa a las 08:00 a. m. [REGISTER_MEDICATION|name=Levodopa|time=08:00] [ACTION:OPEN_MEDICATION]"
-   - "Ya almorcé seco de pollo recién" -> "Registré tu comida Seco de pollo. [REGISTER_FOOD|food=Seco de pollo|mealType=Almuerzo|time=$formattedNow] [ACTION:OPEN_HABITS_FOOD]"
-   - "Acabo de caminar 20 minutos" -> "Registré tu caminata de 20 minutos. [REGISTER_ACTIVITY|activityType=Caminata|duration=20|intensity=Media|time=$formattedNow] [ACTION:OPEN_HABITS_ACTIVITY]"
+1. EXTRACCIÓN UNIVERSAL DE ENTIDADES Y LLENADO DE CASILLAS:
+   Aplica tu conocimiento lingüístico para extraer CUALQUIER elemento mencionado por el paciente (medicamento, remedio, alimento, comida, bebida, ejercicio, deporte o actividad física), sin importar cómo lo exprese.
 
-2. REGISTRO GUIADO EN PASOS (Cuando falta información):
-   - Si el paciente menciona el elemento pero FALTA LA HORA (ej: "Me tomé la levodopa", "Comí una fruta", "Hice mis estiramientos"):
-     Responde de forma cálida preguntando la hora del evento y abre la sección correspondiente. NUNCA incluyas etiquetas de registro `[REGISTER_...]` cuando falta la hora.
-     Ejemplo: "Entendido, ¿a qué hora te tomaste la Levodopa? [ACTION:OPEN_MEDICATION]"
-   - Si el paciente indica una intención general sin nombrar el elemento (ej: "Quiero registrar un medicamento", "Voy a registrar mi comida"):
-     Responde preguntando qué elemento tomó o comió. NUNCA incluyas etiquetas `[REGISTER_...]` en este paso.
+   - MEDICAMENTOS:
+     Casillas a llenar: `name` (nombre del medicamento/remedio), `time` (hora en HH:MM de 24h).
+     Si el paciente no menciona la hora, asume `time=$formattedNow`.
+     Etiqueta a incluir: `[REGISTER_MEDICATION|name=NOMBRE|time=HH:MM]` y `[ACTION:OPEN_MEDICATION]`
 
-3. RESPUESTAS EMPÁTICAS Y SÍNTOMAS DEL PACIENTE:
-   - Si el paciente expresa sensaciones de salud, síntomas o estados de ánimo (ej: "Siento mucho temblor hoy", "Estoy un poco cansado", "Me duele la cabeza", "No me siento muy bien"):
-     Responde con empatía y apoyo en 1 o 2 frases breves. Si corresponde, incluye la etiqueta de navegación útil (ej: `[ACTION:OPEN_TREMOR]`).
-     Ejemplo: "Lamento que te sientas así. Recuerda tomar tus descansos. Puedes monitorear tu temblor aquí. [ACTION:OPEN_TREMOR]"
-   - Si el paciente te saluda o pregunta qué puedes hacer:
-     Salúdalo amablemente y dale opciones breves (ej: "Hola, puedo ayudarte a registrar tus medicamentos, comidas, ejercicios o revisar tu temblor").
+   - ALIMENTACIÓN:
+     Casillas a llenar: `food` (nombre del alimento/comida/bebida), `mealType` (Desayuno, Almuerzo, Cena o Merienda), `time` (hora en HH:MM).
+     Si el paciente no menciona la hora, asume `time=$formattedNow`.
+     Etiqueta a incluir: `[REGISTER_FOOD|food=NOMBRE|mealType=TIPO|time=HH:MM]` y `[ACTION:OPEN_HABITS_FOOD]`
 
-4. ETIQUETAS DE ACCIÓN Y REGISTRO OBLIGATORIAS:
-   - Medicamentos: `[REGISTER_MEDICATION|name=NOMBRE|time=HH:MM]` y `[ACTION:OPEN_MEDICATION]`
-   - Alimentación: `[REGISTER_FOOD|food=NOMBRE|mealType=Desayuno/Almuerzo/Cena|time=HH:MM]` y `[ACTION:OPEN_HABITS_FOOD]`
-   - Actividad Física: `[REGISTER_ACTIVITY|activityType=NOMBRE|duration=MINUTOS|intensity=Leve/Media/Alta|time=HH:MM]` y `[ACTION:OPEN_HABITS_ACTIVITY]`
-   - Monitoreo Temblor: `[ACTION:OPEN_TREMOR]`
-   - Comunidad: `[ACTION:OPEN_COMMUNITY]`
-   - Perfil: `[ACTION:OPEN_PROFILE]`
+   - ACTIVIDAD FÍSICA / EJERCICIO:
+     Casillas a llenar: `activityType` (nombre del ejercicio/deporte/actividad como Yoga, Caminata, Estiramiento, Pilates, Natación, Gimnasia, Bici, etc.), `duration` (minutos, por defecto 15 o 30), `intensity` (Leve, Media, Alta), `time` (hora en HH:MM).
+     Si el paciente no menciona la hora, asume `time=$formattedNow`.
+     Etiqueta a incluir: `[REGISTER_ACTIVITY|activityType=TIPO|duration=MINUTOS|intensity=INTENSIDAD|time=HH:MM]` y `[ACTION:OPEN_HABITS_ACTIVITY]`
+
+2. NAVEGACIÓN Y APRECIACIÓN CLÍNICA:
+   - Monitoreo de Temblor / Síntomas ("tengo temblor", "ver gráfica", "me tiembla"): `[ACTION:OPEN_TREMOR]`
+   - Comunidad / Apoyo: `[ACTION:OPEN_COMMUNITY]`
+   - Perfil de Usuario: `[ACTION:OPEN_PROFILE]`
+
+3. RESPUESTA AL USUARIO:
+   Responde siempre con 1 oración breve, cálida y empática confirmando la acción, e incluye al final las etiquetas técnicas correspondientes.
 
 Mensaje del usuario: "$cleanPrompt"
 ''';
@@ -272,59 +268,58 @@ Mensaje del usuario: "$cleanPrompt"
     return finalResponse;
   }
 
-  /// Parses and executes database inserts in Firestore when registration tags are present
+  /// Parses and executes database inserts in Firestore when registration tags are present.
+  /// Uses a flexible key-value parameter parser to handle any parameter order or omitted optional slots.
   Future<_RegistrationResult> _executeDataRegistration(String rawReply) async {
     try {
       final now = DateTime.now();
 
-      // 1. Medication Registration Tag
-      final medMatch = RegExp(r'\[REGISTER_MEDICATION\|name=([^|]+)\|time=([^\]]+)\]')
-          .firstMatch(rawReply);
-      if (medMatch != null) {
-        final name = _cleanEntityName(medMatch.group(1)!);
-        final timeStr = medMatch.group(2)!.trim();
-        final eventDateTime = _resolveEventDateTime(timeStr, now);
-        final eventTimeOfDay =
-            TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
+      final tagMatch = RegExp(r'\[(REGISTER_[A-Z_]+)\|([^\]]+)\]').firstMatch(rawReply);
+      if (tagMatch != null) {
+        final tagType = tagMatch.group(1)!;
+        final rawParams = tagMatch.group(2)!;
 
-        await _firebaseService.addMedicationTask(
-            name, eventDateTime, eventTimeOfDay, false);
-        return _RegistrationResult(executed: true, cleanReply: rawReply);
-      }
+        // Parse key-value parameters dynamically
+        final Map<String, String> params = {};
+        for (final pair in rawParams.split('|')) {
+          final parts = pair.split('=');
+          if (parts.length >= 2) {
+            params[parts[0].trim()] = parts.sublist(1).join('=').trim();
+          }
+        }
 
-      // 2. Food Registration Tag
-      final foodMatch = RegExp(
-              r'\[REGISTER_FOOD\|food=([^|]+)\|mealType=([^|]+)\|time=([^\]]+)\]')
-          .firstMatch(rawReply);
-      if (foodMatch != null) {
-        final food = _cleanEntityName(foodMatch.group(1)!);
-        final mealType = _normalizeMealType(foodMatch.group(2)!);
-        final timeStr = foodMatch.group(3)!.trim();
-        final eventDateTime = _resolveEventDateTime(timeStr, now);
-        final eventTimeOfDay =
-            TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
+        if (tagType == 'REGISTER_MEDICATION') {
+          final rawName = params['name'] ?? params['medication'] ?? params['item'] ?? 'Medicamento';
+          final name = _cleanEntityName(rawName);
+          final timeStr = params['time'] ?? 'NOW';
+          final eventDateTime = _resolveEventDateTime(timeStr, now);
+          final eventTimeOfDay = TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
 
-        await _firebaseService.logFoodHabit(
-            food, mealType, eventDateTime, eventTimeOfDay);
-        return _RegistrationResult(executed: true, cleanReply: rawReply);
-      }
+          await _firebaseService.addMedicationTask(name, eventDateTime, eventTimeOfDay, false);
+          return _RegistrationResult(executed: true, cleanReply: rawReply);
+        } else if (tagType == 'REGISTER_FOOD') {
+          final rawFood = params['food'] ?? params['name'] ?? params['item'] ?? 'Alimento';
+          final food = _cleanEntityName(rawFood);
+          final rawMealType = params['mealType'] ?? params['meal'] ?? food;
+          final mealType = _normalizeMealType(rawMealType);
+          final timeStr = params['time'] ?? 'NOW';
+          final eventDateTime = _resolveEventDateTime(timeStr, now);
+          final eventTimeOfDay = TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
 
-      // 3. Activity Registration Tag
-      final actMatch = RegExp(
-              r'\[REGISTER_ACTIVITY\|activityType=([^|]+)\|duration=([^|]+)\|intensity=([^|]+)\|time=([^\]]+)\]')
-          .firstMatch(rawReply);
-      if (actMatch != null) {
-        final activityType = _cleanEntityName(actMatch.group(1)!);
-        final duration = int.tryParse(actMatch.group(2)!.trim()) ?? 15;
-        final intensity = _normalizeIntensity(actMatch.group(3)!);
-        final timeStr = actMatch.group(4)!.trim();
-        final eventDateTime = _resolveEventDateTime(timeStr, now);
-        final eventTimeOfDay =
-            TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
+          await _firebaseService.logFoodHabit(food, mealType, eventDateTime, eventTimeOfDay);
+          return _RegistrationResult(executed: true, cleanReply: rawReply);
+        } else if (tagType == 'REGISTER_ACTIVITY') {
+          final rawActivity = params['activityType'] ?? params['activity'] ?? params['name'] ?? 'Ejercicio';
+          final activityType = _cleanEntityName(rawActivity);
+          final duration = int.tryParse(params['duration'] ?? '15') ?? 15;
+          final intensity = _normalizeIntensity(params['intensity'] ?? 'Media');
+          final timeStr = params['time'] ?? 'NOW';
+          final eventDateTime = _resolveEventDateTime(timeStr, now);
+          final eventTimeOfDay = TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
 
-        await _firebaseService.logActivityHabit(
-            activityType, duration, intensity, eventDateTime, eventTimeOfDay);
-        return _RegistrationResult(executed: true, cleanReply: rawReply);
+          await _firebaseService.logActivityHabit(activityType, duration, intensity, eventDateTime, eventTimeOfDay);
+          return _RegistrationResult(executed: true, cleanReply: rawReply);
+        }
       }
     } catch (_) {}
 
@@ -464,15 +459,23 @@ Mensaje del usuario: "$cleanPrompt"
       return 'Registré $foodName a las $formattedTime. [ACTION:OPEN_HABITS_FOOD]';
     }
 
-    if (lower.contains('caminata') || lower.contains('ejercicio') || lower.contains('estiramiento')) {
+    if (lower.contains('caminata') ||
+        lower.contains('ejercicio') ||
+        lower.contains('estiramiento') ||
+        lower.contains('yoga') ||
+        lower.contains('pilates') ||
+        lower.contains('gimnasia') ||
+        lower.contains('natacion') ||
+        lower.contains('natación') ||
+        lower.contains('bici') ||
+        lower.contains('hice') ||
+        lower.contains('practiqué') ||
+        lower.contains('practique') ||
+        lower.contains('realicé') ||
+        lower.contains('realice')) {
       final activity = _cleanEntityName(prompt);
       final duration = _extractDurationMinutes(prompt) ?? 30;
-      final explicitTime = _extractExplicitTimeFromPrompt(prompt);
-
-      if (explicitTime == null) {
-        _pendingContext = PendingVoiceContext(category: 'activity', step: StepState.itemNameExtracted, itemName: activity, durationMinutes: duration);
-        return '¿A qué hora realizaste la $activity?';
-      }
+      final explicitTime = _extractExplicitTimeFromPrompt(prompt) ?? 'NOW';
 
       final eventDateTime = _resolveEventDateTime(explicitTime, now);
       final timeOfDay = TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
@@ -480,7 +483,7 @@ Mensaje del usuario: "$cleanPrompt"
 
       await _firebaseService.logActivityHabit(activity, duration, 'Media', eventDateTime, timeOfDay);
       _pendingContext = null;
-      return 'Registré tu $activity de $duration minutos a las $formattedTime. [ACTION:OPEN_HABITS_ACTIVITY]';
+      return 'Registré tu $activity a las $formattedTime. [ACTION:OPEN_HABITS_ACTIVITY]';
     }
 
     return null;
