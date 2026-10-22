@@ -184,30 +184,25 @@ ${_pendingContext != null ? _pendingContext!.toPromptContext() : "Sin contexto p
 
 INSTRUCCIONES Y REGLAS DE EXTRACCIÓN DE ENTIDADES (NER):
 
-1. EXTRACCIÓN UNIVERSAL DE ENTIDADES Y LLENADO DE CASILLAS:
-   Aplica tu conocimiento lingüístico para extraer CUALQUIER elemento mencionado por el paciente (medicamento, remedio, alimento, comida, bebida, ejercicio, deporte o actividad física), sin importar cómo lo exprese.
+1. EXTRACCIÓN LIMPIA DE ATRIBUTOS (CRÍTICO):
+   - `name` (Medicamento): Extrae ÚNICAMENTE el nombre propio o marca del medicamento. NUNCA incluyas palabras como "pastilla", "pastilla de", "medicina", "dosis", "remedio", ni horas ("6 de la mañana", "a las 8").
+     Ejemplo: "Pastilla de doble hexa a las 6 am" -> name="Doble hexa", time="06:00"
+   - `food` (Alimentación): Extrae ÚNICAMENTE el nombre limpio del alimento sin categorías ("de desayuno", "de almuerzo", "de cena") ni horas.
+     Ejemplo: "Cereal de desayuno a las 7" -> food="Cereal", mealType="Desayuno", time="07:00"
+   - `activityType` (Ejercicio): Extrae ÚNICAMENTE el nombre del ejercicio sin palabras como "clase de", "sesión de", "hacer", ni horas ("6 de la mañana").
+     Ejemplo: "Pilates 6 de la mañana" -> activityType="Pilates", time="06:00"
 
-   - MEDICAMENTOS:
-     Casillas a llenar: `name` (nombre del medicamento/remedio), `time` (hora en HH:MM de 24h).
-     Si el paciente no menciona la hora, asume `time=$formattedNow`.
-     Etiqueta a incluir: `[REGISTER_MEDICATION|name=NOMBRE|time=HH:MM]` y `[ACTION:OPEN_MEDICATION]`
+2. ETIQUETAS TÉCNICAS A GENERAR:
+   - MEDICAMENTOS: `[REGISTER_MEDICATION|name=NOMBRE_LIMPIO|time=HH:MM]` y `[ACTION:OPEN_MEDICATION]`
+   - ALIMENTACIÓN: `[REGISTER_FOOD|food=NOMBRE_LIMPIO|mealType=Desayuno/Almuerzo/Cena/Merienda|time=HH:MM]` y `[ACTION:OPEN_HABITS_FOOD]`
+   - ACTIVIDAD FÍSICA: `[REGISTER_ACTIVITY|activityType=NOMBRE_LIMPIO|duration=MINUTOS|intensity=Leve/Media/Alta|time=HH:MM]` y `[ACTION:OPEN_HABITS_ACTIVITY]`
 
-   - ALIMENTACIÓN:
-     Casillas a llenar: `food` (nombre del alimento/comida/bebida), `mealType` (Desayuno, Almuerzo, Cena o Merienda), `time` (hora en HH:MM).
-     Si el paciente no menciona la hora, asume `time=$formattedNow`.
-     Etiqueta a incluir: `[REGISTER_FOOD|food=NOMBRE|mealType=TIPO|time=HH:MM]` y `[ACTION:OPEN_HABITS_FOOD]`
-
-   - ACTIVIDAD FÍSICA / EJERCICIO:
-     Casillas a llenar: `activityType` (nombre del ejercicio/deporte/actividad como Yoga, Caminata, Estiramiento, Pilates, Natación, Gimnasia, Bici, etc.), `duration` (minutos, por defecto 15 o 30), `intensity` (Leve, Media, Alta), `time` (hora en HH:MM).
-     Si el paciente no menciona la hora, asume `time=$formattedNow`.
-     Etiqueta a incluir: `[REGISTER_ACTIVITY|activityType=TIPO|duration=MINUTOS|intensity=INTENSIDAD|time=HH:MM]` y `[ACTION:OPEN_HABITS_ACTIVITY]`
-
-2. NAVEGACIÓN Y APRECIACIÓN CLÍNICA:
-   - Monitoreo de Temblor / Síntomas ("tengo temblor", "ver gráfica", "me tiembla"): `[ACTION:OPEN_TREMOR]`
+3. NAVEGACIÓN Y APRECIACIÓN CLÍNICA:
+   - Monitoreo de Temblor / Síntomas: `[ACTION:OPEN_TREMOR]`
    - Comunidad / Apoyo: `[ACTION:OPEN_COMMUNITY]`
    - Perfil de Usuario: `[ACTION:OPEN_PROFILE]`
 
-3. RESPUESTA AL USUARIO:
+4. RESPUESTA AL USUARIO:
    Responde siempre con 1 oración breve, cálida y empática confirmando la acción, e incluye al final las etiquetas técnicas correspondientes.
 
 Mensaje del usuario: "$cleanPrompt"
@@ -510,9 +505,9 @@ Mensaje del usuario: "$cleanPrompt"
   String _cleanEntityName(String raw) {
     var s = raw.trim();
 
-    // Remove leading conversational noise, verbs, politeness, and articles
+    // 1. Remove leading conversational noise, verbs, politeness, category words, and articles
     final leadingNoise = RegExp(
-      r'^(hola|por favor|buenas|buenos días|buenas tardes|porfa|me gustaría|quisiera|quiero|necesito|puedes|registra que|registra|registrar|me tomé|me tome|ya tomé|ya tome|tomé|tome|tomar|me comí|me comi|ya comí|ya comi|comí|comi|comer|hice|hacer|fui a|fui|realicé|realice|acabo de|mi|mis|el|la|los|las|un|una|unos|unas|medicamento|alimento|comida|ejercicio|actividad|de)\s+',
+      r'^(hola|por favor|buenas|buenos días|buenas tardes|porfa|me gustaría|quisiera|quiero|necesito|puedes|registra que|registra|registrar|me tomé|me tome|ya tomé|ya tome|tomé|tome|tomar|me comí|me comi|ya comí|ya comi|comí|comi|comer|hice|hacer|fui a|fui|realicé|realice|acabo de|mi|mis|el|la|los|las|un|una|unos|unas|medicamento|alimento|comida|ejercicio|actividad|pastilla de|pastillas de|pastilla|pastillas|medicina de|medicina|remedio de|remedio|dosis de|dosis|toma de|toma|clase de|sesión de|sesion de|de)\s+',
       caseSensitive: false,
     );
 
@@ -520,13 +515,24 @@ Mensaje del usuario: "$cleanPrompt"
       s = s.replaceAll(leadingNoise, '').trim();
     }
 
-    // Remove trailing time phrases or noise
-    s = s.replaceAll(RegExp(r'\s+(ahorita|recien|recién|hoy|ayer|hace un momento|a las \d+.*)$', caseSensitive: false), '').trim();
+    // 2. Remove trailing time phrases, hour numbers, or noise
+    final trailingTimeNoise = RegExp(
+      r'\s+(ahorita|recien|recién|hoy|ayer|hace un momento|hace un rato|a las? \d+.*|\d{1,2}\s*(de la mañana|de la tarde|de la noche|am|pm|a\.m\.|p\.m\.|de la madrugada)?|\d{1,2}\s*hs?|\d{1,2}\s*horas?)$',
+      caseSensitive: false,
+    );
+
+    while (trailingTimeNoise.hasMatch(s)) {
+      s = s.replaceAll(trailingTimeNoise, '').trim();
+    }
+
     s = s.replaceAll(RegExp(r'[.,;:!?]+$'), '').trim();
+
+    // 3. Remove standalone category suffixes (e.g. "Cereal de desayuno" -> "Cereal")
+    s = s.replaceAll(RegExp(r'\s+de\s+(desayuno|almuerzo|cena|merienda)$', caseSensitive: false), '').trim();
 
     if (s.isEmpty) return raw.trim();
 
-    // Capitalize first letter while preserving multi-word phrases (e.g. "Arroz con pollo")
+    // Capitalize first letter while preserving multi-word phrases (e.g. "Doble hexa", "Seco de pollo")
     return s[0].toUpperCase() + s.substring(1);
   }
 

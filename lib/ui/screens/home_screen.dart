@@ -294,11 +294,11 @@ class _AssistantModalState extends State<AssistantModal> {
         return;
     }
 
-    // Push the target screen without popping the assistant modal.
-    // This allows the user to see the section underneath while the assistant
-    // continues speaking and displaying its reply on top without cutting off.
-    Navigator.of(context).push(
+    // Clear any previous screens pushed by the assistant, keeping HomeScreen at root
+    // so pressing the Back button ONCE always returns directly to the main menu.
+    Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => targetScreen),
+      (route) => route.isFirst,
     );
   }
 
