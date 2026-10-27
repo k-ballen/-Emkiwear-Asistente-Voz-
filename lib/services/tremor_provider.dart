@@ -150,7 +150,14 @@ class TremorProvider with ChangeNotifier {
   bool _yaHayResultado = false;
   Timer? _timeoutCheckTimer;
 
-  // Últimos valores válidos recibidos (con < 3s de antigüedad)
+  // Últimos valores válidos de la sesión
+  TremorClass? _ultimaClase;
+  double? _ultimaFrecuencia;
+  double? _ultimoAngulo;
+  double? _ultimoDesplazamiento;
+  bool? _ultimoConfirmado;
+  DateTime? _ultimaActualizacion;
+
   double? _lastValidDomFreq;
   DateTime? _lastValidDomFreqTime;
   double? _lastValidAngDeg;
@@ -158,13 +165,24 @@ class TremorProvider with ChangeNotifier {
   double? _lastValidDesplazCm;
   DateTime? _lastValidDesplazCmTime;
 
-  void _clearLastValidMetrics() {
-    _lastValidDomFreq = null;
-    _lastValidDomFreqTime = null;
-    _lastValidAngDeg = null;
-    _lastValidAngDegTime = null;
-    _lastValidDesplazCm = null;
-    _lastValidDesplazCmTime = null;
+  // Registro/Log de eventos BLE con fecha y hora
+  final List<String> _bleLogs = [];
+
+  // Getters para el último estado válido
+  TremorClass? get ultimaClase => _ultimaClase;
+  double? get ultimaFrecuencia => _ultimaFrecuencia;
+  double? get ultimoAngulo => _ultimoAngulo;
+  double? get ultimoDesplazamiento => _ultimoDesplazamiento;
+  bool? get ultimoConfirmado => _ultimoConfirmado;
+  DateTime? get ultimaActualizacion => _ultimaActualizacion;
+  List<String> get bleLogs => List.unmodifiable(_bleLogs);
+
+  void _logBleEvent(String msg) {
+    final timestamp = DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now());
+    final entry = "$timestamp - $msg";
+    print("BLE_LOG: $entry");
+    _bleLogs.add(entry);
+    if (_bleLogs.length > 200) _bleLogs.removeAt(0);
   }
 
   // Historial de muestras de velocidad para gráfica (50 muestras)
@@ -246,7 +264,7 @@ class TremorProvider with ChangeNotifier {
 
   // Progreso de análisis (0.0 a 1.0 durante ~11s, o -1.0 si es indeterminado tras 11s)
   double get analyzingProgress {
-    if (_lastStatus == null || _lastStatus!.isAnalyzing) {
+    if (_ultimaClase == null && (_lastStatus == null || _lastStatus!.isAnalyzing)) {
       if (_analyzingStartTime == null) return 0.0;
       final elapsedMs = DateTime.now().difference(_analyzingStartTime!).inMilliseconds;
       if (elapsedMs >= 11000) return -1.0;
@@ -255,45 +273,39 @@ class TremorProvider with ChangeNotifier {
     return 0.0;
   }
 
-  // Getters para métricas con fallback a últimos valores válidos (< 3s)
+  // Getters para métricas con el último valor válido de la sesión
   String get validDomFreqDisplay {
+    if (_ultimaFrecuencia != null && _ultimaFrecuencia! > 0) {
+      return "${_ultimaFrecuencia!.toStringAsFixed(1)} Hz";
+    }
     if (_lastStatus != null && _lastStatus!.domFreq > 0) {
       return "${_lastStatus!.domFreq.toStringAsFixed(1)} Hz";
-    }
-    if (_lastValidDomFreq != null && _lastValidDomFreqTime != null) {
-      if (DateTime.now().difference(_lastValidDomFreqTime!).inMilliseconds < 3000) {
-        return "${_lastValidDomFreq!.toStringAsFixed(1)} Hz";
-      }
     }
     return "—";
   }
 
   String get validAngDegDisplay {
+    if (_ultimoAngulo != null && _ultimoAngulo! > 0) {
+      return "${_ultimoAngulo!.toStringAsFixed(2)}°";
+    }
     if (_lastExt != null && _lastExt!.angDeg > 0) {
       return "${_lastExt!.angDeg.toStringAsFixed(2)}°";
     }
     if (_lastSev != null && _lastSev!.thetaDeg > 0) {
       return "${_lastSev!.thetaDeg.toStringAsFixed(2)}°";
     }
-    if (_lastValidAngDeg != null && _lastValidAngDegTime != null) {
-      if (DateTime.now().difference(_lastValidAngDegTime!).inMilliseconds < 3000) {
-        return "${_lastValidAngDeg!.toStringAsFixed(2)}°";
-      }
-    }
     return "—";
   }
 
   String get validDesplazDisplay {
+    if (_ultimoDesplazamiento != null && _ultimoDesplazamiento! > 0) {
+      return "${_ultimoDesplazamiento!.toStringAsFixed(1)} cm";
+    }
     if (_lastSev != null && _lastSev!.desplazCm > 0) {
       return "${_lastSev!.desplazCm.toStringAsFixed(1)} cm";
     }
     if (_lastExt != null && _lastExt!.angDeg > 0) {
       return "${(_lastExt!.angDeg * 0.2618).toStringAsFixed(1)} cm";
-    }
-    if (_lastValidDesplazCm != null && _lastValidDesplazCmTime != null) {
-      if (DateTime.now().difference(_lastValidDesplazCmTime!).inMilliseconds < 3000) {
-        return "${_lastValidDesplazCm!.toStringAsFixed(1)} cm";
-      }
     }
     return "—";
   }
@@ -315,8 +327,8 @@ class TremorProvider with ChangeNotifier {
     _loadBuckets();
 
     _timeoutCheckTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
-      if (_lastStatusTime != null &&
-          DateTime.now().difference(_lastStatusTime!).inSeconds >= 3) {
+      if (_ultimaActualizacion != null &&
+          DateTime.now().difference(_ultimaActualizacion!).inSeconds >= 3) {
         if (!_isDataTimeout) {
           _isDataTimeout = true;
           notifyListeners();
@@ -349,6 +361,7 @@ class TremorProvider with ChangeNotifier {
           _analyzingStartTime ??= DateTime.now();
         }
       } else {
+        // Ignora paquetes con bit6 = 1 (isAnalyzing) cuando ya hubo un resultado en esta sesión
         if (status.isAnalyzing) {
           return;
         }
@@ -358,15 +371,25 @@ class TremorProvider with ChangeNotifier {
       _lastStatusTime = DateTime.now();
       _isDataTimeout = false;
 
-      if (status.tremorClass == TremorClass.sinTemblor ||
-          status.tremorClass == TremorClass.voluntario) {
-        _clearLastValidMetrics();
-      } else if (status.tremorClass == TremorClass.leve ||
-                 status.tremorClass == TremorClass.moderado ||
-                 status.tremorClass == TremorClass.grave) {
-        if (status.domFreq > 0) {
-          _lastValidDomFreq = status.domFreq;
-          _lastValidDomFreqTime = DateTime.now();
+      // Actualizar el ÚLTIMO ESTADO VÁLIDO (bit6 == 0 y clase entre 0 y 4)
+      if (!status.isAnalyzing) {
+        _ultimaClase = status.tremorClass;
+        _ultimoConfirmado = status.tremorPresent;
+        _ultimaActualizacion = DateTime.now();
+
+        if (status.tremorClass == TremorClass.leve ||
+            status.tremorClass == TremorClass.moderado ||
+            status.tremorClass == TremorClass.grave) {
+          if (status.domFreq > 0) {
+            _ultimaFrecuencia = status.domFreq;
+            _lastValidDomFreq = status.domFreq;
+            _lastValidDomFreqTime = DateTime.now();
+          }
+        } else if (status.tremorClass == TremorClass.sinTemblor ||
+                   status.tremorClass == TremorClass.voluntario) {
+          _ultimaFrecuencia = 0.0;
+          _ultimoAngulo = 0.0;
+          _ultimoDesplazamiento = 0.0;
         }
       }
 
@@ -419,11 +442,11 @@ class TremorProvider with ChangeNotifier {
       _lastExt = ext;
       _recordDebugExt(ext);
 
-      if (_lastStatus != null &&
-          (_lastStatus!.tremorClass == TremorClass.leve ||
-           _lastStatus!.tremorClass == TremorClass.moderado ||
-           _lastStatus!.tremorClass == TremorClass.grave)) {
+      if (_ultimaClase == TremorClass.leve ||
+          _ultimaClase == TremorClass.moderado ||
+          _ultimaClase == TremorClass.grave) {
         if (ext.angDeg > 0) {
+          _ultimoAngulo = ext.angDeg;
           _lastValidAngDeg = ext.angDeg;
           _lastValidAngDegTime = DateTime.now();
         }
@@ -439,13 +462,16 @@ class TremorProvider with ChangeNotifier {
     _repository.sevStream.listen((sev) {
       if (!_isStreaming) return;
       _lastSev = sev;
-      if (_lastStatus != null &&
-          (_lastStatus!.tremorClass == TremorClass.leve ||
-           _lastStatus!.tremorClass == TremorClass.moderado ||
-           _lastStatus!.tremorClass == TremorClass.grave)) {
+      if (_ultimaClase == TremorClass.leve ||
+          _ultimaClase == TremorClass.moderado ||
+          _ultimaClase == TremorClass.grave) {
         if (sev.desplazCm > 0) {
+          _ultimoDesplazamiento = sev.desplazCm;
           _lastValidDesplazCm = sev.desplazCm;
           _lastValidDesplazCmTime = DateTime.now();
+        }
+        if (sev.thetaDeg > 0 && (_ultimoAngulo == null || _ultimoAngulo == 0)) {
+          _ultimoAngulo = sev.thetaDeg;
         }
       }
       notifyListeners();
@@ -511,24 +537,25 @@ class TremorProvider with ChangeNotifier {
       if (event.device.platformName == "ParkinsonWatch") {
         _connectionState = event.connectionState;
         if (_connectionState == BluetoothConnectionState.disconnected) {
+          _logBleEvent("Desconectado del reloj (ParkinsonWatch)");
           _isStreaming = false;
           _lastStatus = null;
           _lastExt = null;
           _lastSev = null;
           _lastDiag = null;
           _analyzingStartTime = null;
-          _yaHayResultado = false;
-          _clearLastValidMetrics();
+          // NO se borran _ultimaClase, _ultimaFrecuencia, _ultimoAngulo, _ultimoConfirmado o _ultimaActualizacion
+          // para mantener el último estado válido visible atenuado al 60%.
           _gyroFilter.reset();
           _accelFilter.reset();
         } else if (_connectionState == BluetoothConnectionState.connected) {
+          _logBleEvent("Reconectado exitosamente al reloj (ParkinsonWatch)");
+          _isStreaming = true;
           _lastStatus = null;
           _lastExt = null;
           _lastSev = null;
           _lastDiag = null;
           _analyzingStartTime = DateTime.now();
-          _yaHayResultado = false;
-          _clearLastValidMetrics();
           resetSessionCounters();
         }
         notifyListeners();

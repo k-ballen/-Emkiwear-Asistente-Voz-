@@ -6,6 +6,23 @@ enum TremorClass {
   voluntario, // 4
 }
 
+extension TremorClassToEstado on TremorClass {
+  EstadoTemblor toEstadoTemblor() {
+    switch (this) {
+      case TremorClass.sinTemblor:
+        return EstadoTemblor.sinTemblor;
+      case TremorClass.leve:
+        return EstadoTemblor.leve;
+      case TremorClass.moderado:
+        return EstadoTemblor.moderado;
+      case TremorClass.grave:
+        return EstadoTemblor.grave;
+      case TremorClass.voluntario:
+        return EstadoTemblor.voluntario;
+    }
+  }
+}
+
 enum EstadoTemblor {
   analizando,
   sinTemblor,

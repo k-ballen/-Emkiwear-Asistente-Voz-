@@ -198,20 +198,11 @@ class _TremorChartScreenState extends State<TremorChartScreen> {
 
   // 1. TARJETA PRINCIPAL DE ESTADO ACTUAL
   Widget _buildMainCurrentStateCard(TremorProvider provider) {
-    Widget cardChild;
-
-    if (provider.connectionState != BluetoothConnectionState.connected) {
-      cardChild = _buildMessageCard(
-        key: const ValueKey('disconnected'),
-        title: "Reloj Desconectado",
-        subtitle: "Conecta tu reloj EMKIWEAR para iniciar el monitoreo",
-        icon: Icons.bluetooth_disabled,
-        color: Colors.grey,
-      );
-    } else if (!provider.yaHayResultado) {
+    // 1. Antes del PRIMER resultado desde que se abrió la app:
+    if (provider.ultimaClase == null && provider.lastStatus == null) {
       final progress = provider.analyzingProgress;
-      cardChild = Card(
-        key: const ValueKey('analizando'),
+      return Card(
+        key: const ValueKey('analizando_inicial'),
         elevation: 4,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         child: Container(
@@ -263,251 +254,257 @@ class _TremorChartScreenState extends State<TremorChartScreen> {
           ),
         ),
       );
-    } else if (provider.isDataTimeout) {
-      cardChild = _buildMessageCard(
-        key: const ValueKey('timeout'),
-        title: "Sin datos del reloj",
-        subtitle: "No se reciben paquetes STATUS del reloj. Verifica la conexión BLE.",
-        icon: Icons.signal_cellular_connected_no_internet_0_bar,
-        color: Colors.red,
-      );
-    } else {
-      final status = provider.lastStatus!;
-      final estado = status.estado;
+    }
 
-      switch (estado) {
-            case EstadoTemblor.analizando:
-              cardChild = const SizedBox.shrink();
-              break;
+    // 2. Muestra SIEMPRE la última clase válida recibida
+    final clase = provider.ultimaClase ?? (provider.lastStatus?.tremorClass ?? TremorClass.sinTemblor);
+    final estado = clase.toEstadoTemblor();
+    final isConfirmed = provider.ultimoConfirmado ?? (provider.lastStatus?.tremorPresent ?? false);
+    final isDisconnected = provider.connectionState != BluetoothConnectionState.connected;
 
-            case EstadoTemblor.sinTemblor:
-              cardChild = _buildStatusCardContainer(
-                key: const ValueKey('sinTemblor'),
-                bgColor: const Color(0xFFE0E0E0),
-                textColor: Colors.black87,
-                title: "SIN TEMBLOR",
-                subtitle: "Reposo o movimiento habitual sin patrones parkinsonianos",
-                badge: status.detected ? "Detectando…" : "Normal",
-                badgeColor: status.detected ? Colors.amber.shade800 : Colors.black12,
-                details: [
-                  _buildMetricItem(
-                    label: "Movimiento",
-                    value: "${status.movement.toStringAsFixed(1)} °/s",
-                    icon: Icons.directions_walk,
-                    color: Colors.black87,
-                  )
-                ],
-              );
-              break;
+    final elapsedSeconds = provider.ultimaActualizacion == null
+        ? 0
+        : DateTime.now().difference(provider.ultimaActualizacion!).inSeconds;
 
-            case EstadoTemblor.voluntario:
-              cardChild = _buildStatusCardContainer(
-                key: const ValueKey('voluntario'),
-                bgColor: const Color(0xFF1E5AC8),
-                textColor: Colors.white,
-                title: "MOVIMIENTO VOLUNTARIO",
-                subtitle: "Movimiento rápido o voluntario del usuario",
-                badge: status.detected ? "Detectando…" : "Voluntario",
-                badgeColor: Colors.white24,
-                details: [
-                  _buildMetricItem(
-                    label: "Velocidad",
-                    value: "${status.movement.toStringAsFixed(1)} °/s",
-                    icon: Icons.directions_run,
-                    color: Colors.white,
-                  )
-                ],
-              );
-              break;
+    final isStale = isDisconnected || elapsedSeconds > 15;
+    final isUpdating = !isDisconnected && elapsedSeconds >= 3 && elapsedSeconds <= 15;
 
-            case EstadoTemblor.leve:
-            case EstadoTemblor.moderado:
-            case EstadoTemblor.grave:
-              final isConfirmed = status.tremorPresent;
-              final baseColor = _getEstadoColor(estado);
-              final cardBgColor = isConfirmed ? baseColor : baseColor.withOpacity(0.5);
+    Widget cardChild;
 
-              cardChild = Card(
-                key: ValueKey('temblor_${estado.nameEs}_$isConfirmed'),
-                elevation: 5,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                child: Container(
-                  padding: const EdgeInsets.all(16.0),
-                  decoration: BoxDecoration(
-                    color: cardBgColor,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Column(
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Expanded(
-                            child: Text(
-                              'TEMBLOR PARKINSONIANO',
+    switch (estado) {
+      case EstadoTemblor.analizando:
+        cardChild = const SizedBox.shrink();
+        break;
+
+      case EstadoTemblor.sinTemblor:
+        cardChild = _buildStatusCardContainer(
+          key: const ValueKey('sinTemblor'),
+          bgColor: const Color(0xFFE0E0E0),
+          textColor: Colors.black87,
+          title: "SIN TEMBLOR",
+          subtitle: "Reposo o movimiento habitual sin patrones parkinsonianos",
+          badge: (provider.lastStatus?.detected ?? false) ? "Detectando…" : "Normal",
+          badgeColor: (provider.lastStatus?.detected ?? false) ? Colors.amber.shade800 : Colors.black12,
+          details: [
+            _buildMetricItem(
+              label: "Movimiento",
+              value: "${(provider.lastStatus?.movement ?? 0.0).toStringAsFixed(1)} °/s",
+              icon: Icons.directions_walk,
+              color: Colors.black87,
+            )
+          ],
+        );
+        break;
+
+      case EstadoTemblor.voluntario:
+        cardChild = _buildStatusCardContainer(
+          key: const ValueKey('voluntario'),
+          bgColor: const Color(0xFF1E5AC8),
+          textColor: Colors.white,
+          title: "MOVIMIENTO VOLUNTARIO",
+          subtitle: "Movimiento rápido o voluntario del usuario",
+          badge: (provider.lastStatus?.detected ?? false) ? "Detectando…" : "Voluntario",
+          badgeColor: Colors.white24,
+          details: [
+            _buildMetricItem(
+              label: "Velocidad",
+              value: "${(provider.lastStatus?.movement ?? 0.0).toStringAsFixed(1)} °/s",
+              icon: Icons.directions_run,
+              color: Colors.white,
+            )
+          ],
+        );
+        break;
+
+      case EstadoTemblor.leve:
+      case EstadoTemblor.moderado:
+      case EstadoTemblor.grave:
+        final baseColor = _getEstadoColor(estado);
+        final cardBgColor = isConfirmed ? baseColor : baseColor.withOpacity(0.5);
+
+        cardChild = Card(
+          key: ValueKey('temblor_${estado.nameEs}_$isConfirmed'),
+          elevation: 5,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Container(
+            padding: const EdgeInsets.all(16.0),
+            decoration: BoxDecoration(
+              color: cardBgColor,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'TEMBLOR PARKINSONIANO',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                          letterSpacing: 0.8,
+                        ),
+                      ),
+                    ),
+                    if (!isConfirmed && !isStale)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.black26,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              width: 10,
+                              height: 10,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            ),
+                            SizedBox(width: 6),
+                            Text(
+                              'detectando…',
                               style: TextStyle(
-                                fontSize: 12,
+                                fontSize: 10,
                                 fontWeight: FontWeight.bold,
                                 color: Colors.white,
-                                letterSpacing: 0.8,
                               ),
                             ),
-                          ),
-                          if (!isConfirmed)
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: Colors.black26,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: const Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  SizedBox(
-                                    width: 10,
-                                    height: 10,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Colors.white,
-                                    ),
-                                  ),
-                                  SizedBox(width: 6),
-                                  Text(
-                                    'detectando…',
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.white,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-
-                      // Banner Severidad
-                      Text(
-                        estado.nameEs,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 28,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 1.5,
+                          ],
                         ),
                       ),
-                      Text(
-                        estado.description,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
+                  ],
+                ),
+                const SizedBox(height: 12),
 
-                      const SizedBox(height: 16),
-
-                      // Métricas: Ángulo (principal), Desplazamiento, Frecuencia, Velocidad
-                      Wrap(
-                        spacing: 12,
-                        runSpacing: 10,
-                        alignment: WrapAlignment.spaceAround,
-                        children: [
-                          _buildMetricItem(
-                            label: "Ángulo (Principal)",
-                            value: provider.validAngDegDisplay,
-                            icon: Icons.rotate_right,
-                            color: Colors.white,
-                            isPrimary: true,
-                          ),
-                          _buildMetricItem(
-                            label: "Desplazamiento",
-                            value: provider.validDesplazDisplay,
-                            icon: Icons.straighten,
-                            color: Colors.white,
-                          ),
-                          _buildMetricItem(
-                            label: "Frecuencia",
-                            value: provider.validDomFreqDisplay,
-                            icon: Icons.waves,
-                            color: Colors.white,
-                          ),
-                          _buildMetricItem(
-                            label: "Velocidad",
-                            value: "${status.tremorAmp.toStringAsFixed(1)} °/s",
-                            icon: Icons.speed,
-                            color: Colors.white,
-                          ),
-                        ],
-                      ),
-
-                      const SizedBox(height: 12),
-                      const Divider(color: Colors.white24),
-
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Flexible(
-                            child: Text(
-                              "Duración episodio: ${status.episode} s",
-                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
-                            ),
-                          ),
-                          Text(
-                            "Duty cycle: ${status.duty}%",
-                            style: const TextStyle(fontSize: 12, color: Colors.white70),
-                          ),
-                        ],
-                      ),
-
-                      const SizedBox(height: 8),
-
-                      ExpansionTile(
-                        tilePadding: EdgeInsets.zero,
-                        iconColor: Colors.white,
-                        collapsedIconColor: Colors.white,
-                        title: const Text(
-                          "¿Cómo se clasifica?",
-                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
-                        ),
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.15),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: const Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text("• LEVE: < 1.5° (≈ < 0.8 cm)", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
-                                Text("• MODERADO: 1.5° - 4.5° (≈ 0.8 - 2.4 cm)", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
-                                Text("• GRAVE: >= 4.5° (≈ >= 2.4 cm)", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
-                                SizedBox(height: 4),
-                                Text(
-                                  "Escala calibrada con el banco robótico y con temblor imitado. Los centímetros son una estimación del movimiento de los dedos (15 cm desde la muñeca).",
-                                  style: TextStyle(fontSize: 10, fontStyle: FontStyle.italic, color: Colors.white70),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
+                // Banner Severidad
+                Text(
+                  estado.nameEs,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.5,
                   ),
                 ),
-              );
-              break;
-          }
-        }
+                Text(
+                  estado.description,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
 
-      return AnimatedSwitcher(
-        duration: const Duration(milliseconds: 250),
-        child: cardChild,
-      );
+                const SizedBox(height: 16),
+
+                // Métricas
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 10,
+                  alignment: WrapAlignment.spaceAround,
+                  children: [
+                    _buildMetricItem(
+                      label: "Ángulo (Principal)",
+                      value: provider.validAngDegDisplay,
+                      icon: Icons.rotate_right,
+                      color: Colors.white,
+                      isPrimary: true,
+                    ),
+                    _buildMetricItem(
+                      label: "Desplazamiento",
+                      value: provider.validDesplazDisplay,
+                      icon: Icons.straighten,
+                      color: Colors.white,
+                    ),
+                    _buildMetricItem(
+                      label: "Frecuencia",
+                      value: provider.validDomFreqDisplay,
+                      icon: Icons.waves,
+                      color: Colors.white,
+                    ),
+                    _buildMetricItem(
+                      label: "Velocidad",
+                      value: "${(provider.lastStatus?.tremorAmp ?? 0.0).toStringAsFixed(1)} °/s",
+                      icon: Icons.speed,
+                      color: Colors.white,
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 8),
+
+                ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  iconColor: Colors.white,
+                  collapsedIconColor: Colors.white,
+                  title: const Text(
+                    "¿Cómo se clasifica?",
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+                  ),
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text("• LEVE: < 1.5° (≈ < 0.8 cm)", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+                          Text("• MODERADO: 1.5° - 4.5° (≈ 0.8 - 2.4 cm)", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+                          Text("• GRAVE: >= 4.5° (≈ >= 2.4 cm)", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+                          SizedBox(height: 4),
+                          Text(
+                            "Escala calibrada con el banco robótico y con temblor imitado. Los centímetros son una estimación del movimiento de los dedos (15 cm desde la muñeca).",
+                            style: TextStyle(fontSize: 10, fontStyle: FontStyle.italic, color: Colors.white70),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+        break;
     }
+
+    return Column(
+      children: [
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 250),
+          child: AnimatedOpacity(
+            key: ValueKey('opacity_${isStale}_${clase.name}'),
+            duration: const Duration(milliseconds: 250),
+            opacity: isStale ? 0.60 : 1.0,
+            child: cardChild,
+          ),
+        ),
+        if (isStale) ...[
+          const SizedBox(height: 6),
+          Text(
+            "Reconectando… · último dato hace $elapsedSeconds s",
+            style: const TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.w500),
+          ),
+        ] else if (isUpdating) ...[
+          const SizedBox(height: 6),
+          const Text(
+            "Actualizando…",
+            style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.w500),
+          ),
+        ],
+      ],
+    );
+  }
 
   Color _getEstadoColor(EstadoTemblor estado) {
     switch (estado) {

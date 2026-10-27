@@ -20,8 +20,41 @@ enum AppVoiceAction {
   openHabitsFood,
   openHabitsActivity,
   openCommunity,
+  openCommunityCompanions,
+  openCommunityGroups,
+  openCommunityLessons,
+  openCompanionProfile,
+  openCommunityGroup,
+  openCommunityLesson,
+  togglePrivacyPrivate,
+  togglePrivacyPublic,
   openProfile,
 }
+
+/// Known first names of demo companions for voice-driven lookup.
+/// These are matched case-insensitively when the user mentions a companion
+/// by name within the Comunidad Parkinson context.
+const List<String> knownCompanionFirstNames = [
+  'maría', 'maria', 'daniela', 'juan', 'carlos', 'ana', 'sofía', 'sofia',
+  'luis', 'pedro', 'laura', 'carmen', 'josé', 'jose', 'elena', 'diego',
+  'valentina', 'martina', 'verónica', 'veronica', 'patricia', 'robert',
+  'fernando', 'isabel', 'catalina',
+];
+
+/// Known group names for voice-driven lookup (normalized for matching).
+const List<String> knownGroupNames = [
+  'club parkinson bogotá',
+  'grupo de caminatas',
+  'asociación de pacientes',
+];
+
+/// Known lesson titles for voice-driven lookup (normalized for matching).
+const List<String> knownLessonTitles = [
+  '¿qué es el parkinson?',
+  'importancia de la actividad física',
+  'alimentación y bienestar',
+  'mitos y realidades',
+];
 
 /// Stages of the sequential step-by-step registration flow.
 enum StepState {
@@ -55,11 +88,13 @@ class VoiceAssistantResponse {
   final String textResponse;
   final AppVoiceAction action;
   final bool isRegistrationExecuted;
+  final String? targetName;
 
   const VoiceAssistantResponse({
     required this.textResponse,
     this.action = AppVoiceAction.none,
     this.isRegistrationExecuted = false,
+    this.targetName,
   });
 }
 
@@ -166,6 +201,7 @@ class VoiceAssistantService {
     }
 
     AppVoiceAction detectedAction = _detectActionFromPrompt(cleanPrompt);
+    String? targetName = _extractCommunityTargetName(cleanPrompt, detectedAction);
     String rawReply = '';
 
     try {
@@ -174,45 +210,52 @@ class VoiceAssistantService {
           '${nowTime.hour.toString().padLeft(2, '0')}:${nowTime.minute.toString().padLeft(2, '0')}';
 
       final systemPrompt = '''
-Eres Emki, el asistente inteligente de voz y salud de la app Emkiwear Care para personas con enfermedad de Parkinson.
-Tu tarea principal es usar tu CAPACIDAD UNIVERSAL DE RECONOCIMIENTO DE ENTIDADES NOMBRADAS (NER GENERATIVO) para extraer del mensaje del usuario cualquier elemento de salud y llenar las casillas correspondientes en la base de datos.
+Eres Emki, el asistente inteligente de voz, cálido y empático de la app Emkiwear Care para personas con enfermedad de Parkinson.
+Tu objetivo es comprender los mensajes del paciente (incluso si se expresan con variaciones coloquiales, dudas, frases incompletas, expresiones imprecisas o pequeñas faltas al hablar) y guiarlo a registrar datos de salud o navegar en la app.
 
 HORA DE REFERENCIA DEL DISPOSITIVO: $formattedNow
 
 ESTADO CONVERSACIONAL PREVIO ACTIVO:
 ${_pendingContext != null ? _pendingContext!.toPromptContext() : "Sin contexto previo activo."}
 
-REGLAS OBLIGATORIAS DE EXTRACCIÓN Y PREGUNTA DE HORA:
+REGLAS Y DINÁMICAS DE INTERACCIÓN FLEXIBLE:
 
-1. REGLA FUNDAMENTAL SOBRE LA HORA (SI FALTA LA HORA -> PREGUNTAR):
-   - Si el usuario menciona el elemento (medicamento, alimento o ejercicio) PERO NO INDICA LA HORA NI REFERENCIA TEMPORAL (ej: "desayuné avena trasnochada", "tomé levodopa", "hice caminata"):
-     NO GENERES NINGUNA ETIQUETA DE REGISTRO `[REGISTER_...]`.
-     Responde cálidamente preguntando la hora del evento en 1 oración breve.
-     Ejemplos:
-     - "desayuné avena trasnochada" (sin hora) -> "¿A qué hora desayunaste Avena trasnochada? [ACTION:OPEN_HABITS_FOOD]"
-     - "tomé levodopa" (sin hora) -> "¿A qué hora te tomaste la Levodopa? [ACTION:OPEN_MEDICATION]"
-     - "hice caminata" (sin hora) -> "¿A qué hora realizaste la Caminata? [ACTION:OPEN_HABITS_ACTIVITY]"
+1. REGISTRO DIRECTO O EN 1 SOLO TURNO (Cuando el paciente da el elemento Y la hora o momento):
+   Si el mensaje contiene el elemento (comida, medicamento o ejercicio) Y una referencia de tiempo (ej: "a las 8 am", "ahorita", "recién", "hace un rato", "en la mañana", "al medio día"):
+   Genera INMEDIATAMENTE las etiquetas de registro y navegación en tu respuesta.
+   Ejemplos:
+   - "Me tomé la levodopa a las 8 de la mañana" -> "Registré la toma de tu Levodopa a las 08:00 a. m. [REGISTER_MEDICATION|name=Levodopa|time=08:00] [ACTION:OPEN_MEDICATION]"
+   - "Ya almorcé seco de pollo recién" -> "Registré tu comida Seco de pollo. [REGISTER_FOOD|food=Seco de pollo|mealType=Almuerzo|time=$formattedNow] [ACTION:OPEN_HABITS_FOOD]"
+   - "Acabo de caminar 20 minutos" -> "Registré tu caminata de 20 minutos. [REGISTER_ACTIVITY|activityType=Caminata|duration=20|intensity=Media|time=$formattedNow] [ACTION:OPEN_HABITS_ACTIVITY]"
 
-   - Si el usuario SÍ indica la hora (ej: "desayuné avena trasnochada a las 7 de la mañana" o responde "a las 7 am" tras la pregunta):
-     Genera la etiqueta de registro correspondiente con `time=HH:MM`.
+2. REGISTRO GUIADO EN PASOS (Cuando falta información):
+   - Si el paciente menciona el elemento pero FALTA LA HORA (ej: "Me tomé la levodopa", "Comí una fruta", "Hice mis estiramientos"):
+     Responde de forma cálida preguntando la hora del evento y abre la sección correspondiente. NUNCA incluyas etiquetas de registro `[REGISTER_...]` cuando falta la hora.
+     Ejemplo: "Entendido, ¿a qué hora te tomaste la Levodopa? [ACTION:OPEN_MEDICATION]"
+   - Si el paciente indica una intención general sin nombrar el elemento (ej: "Quiero registrar un medicamento", "Voy a registrar mi comida"):
+     Responde preguntando qué elemento tomó o comió. NUNCA incluyas etiquetas `[REGISTER_...]` en este paso.
 
-2. EXTRACCIÓN PRECISA DE CATEGORÍA DE COMIDA (`mealType`):
-   - `food`: Extrae ÚNICAMENTE el nombre limpio del alimento sin verbos ("desayuné", "almorcé", "cené") ni categorías ("mi desayuno de", "de desayuno").
-   - `mealType`: Asigna con precisión la categoría adecuada:
-     * Si usa "desayuné" o "desayuno" -> `mealType="Desayuno"`
-     * Si usa "almorcé", "almuerzo" o "comida" -> `mealType="Almuerzo"`
-     * Si usa "cené" o "cena" -> `mealType="Cena"`
-     * Si usa "merienda" o "snack" -> `mealType="Merienda"`
-     * Si el verbo es general ("comí"), deduce según la hora: 05:00-11:00 (Desayuno), 11:01-16:00 (Almuerzo), 16:01-18:30 (Merienda), 18:31-04:59 (Cena).
+3. RESPUESTAS EMPÁTICAS Y SÍNTOMAS DEL PACIENTE:
+   - Si el paciente expresa sensaciones de salud, síntomas o estados de ánimo (ej: "Siento mucho temblor hoy", "Estoy un poco cansado", "Me duele la cabeza", "No me siento muy bien"):
+     Responde con empatía y apoyo en 1 o 2 frases breves. Si corresponde, incluye la etiqueta de navegación útil (ej: `[ACTION:OPEN_TREMOR]`).
+     Ejemplo: "Lamento que te sientas así. Recuerda tomar tus descansos. Puedes monitorear tu temblor aquí. [ACTION:OPEN_TREMOR]"
+   - Si el paciente te saluda o pregunta qué puedes hacer:
+     Salúdalo amablemente y dale opciones breves (ej: "Hola, puedo ayudarte a registrar tus medicamentos, comidas, ejercicios o revisar tu temblor").
 
-3. ETIQUETAS TÉCNICAS A GENERAR (SOLO CUANDO SE TENGA LA HORA):
-   - MEDICAMENTOS: `[REGISTER_MEDICATION|name=NOMBRE_LIMPIO|time=HH:MM]` y `[ACTION:OPEN_MEDICATION]`
-   - ALIMENTACIÓN: `[REGISTER_FOOD|food=NOMBRE_LIMPIO|mealType=Desayuno/Almuerzo/Cena/Merienda|time=HH:MM]` y `[ACTION:OPEN_HABITS_FOOD]`
-   - ACTIVIDAD FÍSICA: `[REGISTER_ACTIVITY|activityType=NOMBRE_LIMPIO|duration=MINUTOS|intensity=Leve/Media/Alta|time=HH:MM]` y `[ACTION:OPEN_HABITS_ACTIVITY]`
-
-4. NAVEGACIÓN Y RESPUESTA:
-   - Monitoreo de Temblor: `[ACTION:OPEN_TREMOR]`
-   - Comunidad: `[ACTION:OPEN_COMMUNITY]`
+4. ETIQUETAS DE ACCIÓN Y REGISTRO OBLIGATORIAS:
+   - Medicamentos: `[REGISTER_MEDICATION|name=NOMBRE|time=HH:MM]` y `[ACTION:OPEN_MEDICATION]`
+   - Alimentación: `[REGISTER_FOOD|food=NOMBRE|mealType=Desayuno/Almuerzo/Cena|time=HH:MM]` y `[ACTION:OPEN_HABITS_FOOD]`
+   - Actividad Física: `[REGISTER_ACTIVITY|activityType=NOMBRE|duration=MINUTOS|intensity=Leve/Media/Alta|time=HH:MM]` y `[ACTION:OPEN_HABITS_ACTIVITY]`
+    - Monitoreo Temblor: `[ACTION:OPEN_TREMOR]`
+   - Comunidad → abrir sección general: `[ACTION:OPEN_COMMUNITY]`
+   - Comunidad → pestaña Compañeros: `[ACTION:OPEN_COMMUNITY_COMPANIONS]`
+   - Comunidad → pestaña Grupos: `[ACTION:OPEN_COMMUNITY_GROUPS]`
+   - Comunidad → pestaña Lecciones: `[ACTION:OPEN_COMMUNITY_LESSONS]`
+   - Abrir perfil de un compañero específico (usa el nombre): `[ACTION:OPEN_COMPANION|name=NOMBRE]`
+   - Abrir un grupo específico (usa el nombre del grupo): `[ACTION:OPEN_GROUP|name=NOMBRE_GRUPO]`
+   - Abrir una lección específica (usa el título de la lección): `[ACTION:OPEN_LESSON|name=TÍTULO_LECCIÓN]`
+   - Perfil privado: `[ACTION:PRIVACY_PRIVATE]` (haz de tu perfil privado)
+   - Perfil público: `[ACTION:PRIVACY_PUBLIC]` (haz de tu perfil público)
    - Perfil: `[ACTION:OPEN_PROFILE]`
 
 Mensaje del usuario: "$cleanPrompt"
@@ -224,7 +267,7 @@ Mensaje del usuario: "$cleanPrompt"
       if (fallbackMsg != null) {
         rawReply = fallbackMsg;
       } else {
-        rawReply = _getFallbackResponse(cleanPrompt, detectedAction);
+        rawReply = _getFallbackResponse(cleanPrompt, detectedAction, targetName);
       }
     }
 
@@ -246,15 +289,90 @@ Mensaje del usuario: "$cleanPrompt"
       detectedAction = AppVoiceAction.openHabitsActivity;
     } else if (rawReply.contains('[ACTION:OPEN_HABITS_FOOD]') || rawReply.contains('[ACTION:OPEN_HABITS]')) {
       detectedAction = AppVoiceAction.openHabitsFood;
+    } else if (rawReply.contains('[ACTION:OPEN_COMMUNITY_COMPANIONS]')) {
+      detectedAction = AppVoiceAction.openCommunityCompanions;
+    } else if (rawReply.contains('[ACTION:OPEN_COMMUNITY_GROUPS]')) {
+      detectedAction = AppVoiceAction.openCommunityGroups;
+    } else if (rawReply.contains('[ACTION:OPEN_COMMUNITY_LESSONS]')) {
+      detectedAction = AppVoiceAction.openCommunityLessons;
     } else if (rawReply.contains('[ACTION:OPEN_COMMUNITY]')) {
       detectedAction = AppVoiceAction.openCommunity;
     } else if (rawReply.contains('[ACTION:OPEN_PROFILE]')) {
       detectedAction = AppVoiceAction.openProfile;
+    } else if (rawReply.contains('[ACTION:PRIVACY_PRIVATE]')) {
+      detectedAction = AppVoiceAction.togglePrivacyPrivate;
+    } else if (rawReply.contains('[ACTION:PRIVACY_PUBLIC]')) {
+      detectedAction = AppVoiceAction.togglePrivacyPublic;
     }
+
+    // Parse parameterized companion / group / lesson tags
+    if (detectedAction == AppVoiceAction.none ||
+        detectedAction == AppVoiceAction.openCommunity) {
+      final companionMatch =
+          RegExp(r'\[ACTION:OPEN_COMPANION\|name=([^\]]+)\]').firstMatch(rawReply);
+      if (companionMatch != null) {
+        detectedAction = AppVoiceAction.openCompanionProfile;
+        targetName = _cleanEntityName(companionMatch.group(1)!);
+      }
+    }
+    if (detectedAction == AppVoiceAction.none ||
+        detectedAction == AppVoiceAction.openCommunity) {
+      final groupMatch =
+          RegExp(r'\[ACTION:OPEN_GROUP\|name=([^\]]+)\]').firstMatch(rawReply);
+      if (groupMatch != null) {
+        detectedAction = AppVoiceAction.openCommunityGroup;
+        targetName = _cleanEntityName(groupMatch.group(1)!);
+      }
+    }
+    if (detectedAction == AppVoiceAction.none ||
+        detectedAction == AppVoiceAction.openCommunity) {
+      final lessonMatch =
+          RegExp(r'\[ACTION:OPEN_LESSON\|name=([^\]]+)\]').firstMatch(rawReply);
+      if (lessonMatch != null) {
+        detectedAction = AppVoiceAction.openCommunityLesson;
+        targetName = _cleanEntityName(lessonMatch.group(1)!);
+      }
+    }
+
+    // If only a companion / group / lesson tag was emitted (without a
+    // specific section tag), the action above was already set.
+    final companionOnly =
+        RegExp(r'\[ACTION:OPEN_COMPANION\|name=([^\]]+)\]').firstMatch(rawReply);
+    if (companionOnly != null &&
+        detectedAction != AppVoiceAction.openCompanionProfile) {
+      detectedAction = AppVoiceAction.openCompanionProfile;
+      targetName = _cleanEntityName(companionOnly.group(1)!);
+    }
+    final groupOnly =
+        RegExp(r'\[ACTION:OPEN_GROUP\|name=([^\]]+)\]').firstMatch(rawReply);
+    if (groupOnly != null &&
+        detectedAction != AppVoiceAction.openCommunityGroup) {
+      detectedAction = AppVoiceAction.openCommunityGroup;
+      targetName = _cleanEntityName(groupOnly.group(1)!);
+    }
+    final lessonOnly =
+        RegExp(r'\[ACTION:OPEN_LESSON\|name=([^\]]+)\]').firstMatch(rawReply);
+    if (lessonOnly != null &&
+        detectedAction != AppVoiceAction.openCommunityLesson) {
+      detectedAction = AppVoiceAction.openCommunityLesson;
+      targetName = _cleanEntityName(lessonOnly.group(1)!);
+    }
+
+    // Execute privacy toggle directly if the command was understood
+    if (detectedAction == AppVoiceAction.togglePrivacyPrivate) {
+      await _firebaseService.updatePrivacy(false);
+    } else if (detectedAction == AppVoiceAction.togglePrivacyPublic) {
+      await _firebaseService.updatePrivacy(true);
+    }
+
+    // If targetName was not set from a Gemini tag, fall back to extraction
+    // from the original user prompt.
+    targetName ??= _extractCommunityTargetName(cleanPrompt, detectedAction);
 
     // Completely strip ALL technical tags before UI rendering or TTS speech!
     final cleanReply = rawReply
         .replaceAll(RegExp(r'\[ACTION:[A-Z_]+\]'), '')
+        .replaceAll(RegExp(r'\[ACTION:[A-Z_]+\|[^\]]*\]'), '')
         .replaceAll(RegExp(r'\[REGISTER_[A-Z_]+\|[^\]]+\]'), '')
         .replaceAll(RegExp(r'\[.*?\]'), '')
         .trim();
@@ -265,6 +383,7 @@ Mensaje del usuario: "$cleanPrompt"
           : 'Entendido, procesando tu solicitud.',
       action: detectedAction,
       isRegistrationExecuted: regResult.executed,
+      targetName: targetName,
     );
 
     // Speak ONLY the 100% clean conversational text
@@ -273,58 +392,59 @@ Mensaje del usuario: "$cleanPrompt"
     return finalResponse;
   }
 
-  /// Parses and executes database inserts in Firestore when registration tags are present.
-  /// Uses a flexible key-value parameter parser to handle any parameter order or omitted optional slots.
+  /// Parses and executes database inserts in Firestore when registration tags are present
   Future<_RegistrationResult> _executeDataRegistration(String rawReply) async {
     try {
       final now = DateTime.now();
 
-      final tagMatch = RegExp(r'\[(REGISTER_[A-Z_]+)\|([^\]]+)\]').firstMatch(rawReply);
-      if (tagMatch != null) {
-        final tagType = tagMatch.group(1)!;
-        final rawParams = tagMatch.group(2)!;
+      // 1. Medication Registration Tag
+      final medMatch = RegExp(r'\[REGISTER_MEDICATION\|name=([^|]+)\|time=([^\]]+)\]')
+          .firstMatch(rawReply);
+      if (medMatch != null) {
+        final name = _cleanEntityName(medMatch.group(1)!);
+        final timeStr = medMatch.group(2)!.trim();
+        final eventDateTime = _resolveEventDateTime(timeStr, now);
+        final eventTimeOfDay =
+            TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
 
-        // Parse key-value parameters dynamically
-        final Map<String, String> params = {};
-        for (final pair in rawParams.split('|')) {
-          final parts = pair.split('=');
-          if (parts.length >= 2) {
-            params[parts[0].trim()] = parts.sublist(1).join('=').trim();
-          }
-        }
+        await _firebaseService.addMedicationTask(
+            name, eventDateTime, eventTimeOfDay, false);
+        return _RegistrationResult(executed: true, cleanReply: rawReply);
+      }
 
-        if (tagType == 'REGISTER_MEDICATION') {
-          final rawName = params['name'] ?? params['medication'] ?? params['item'] ?? 'Medicamento';
-          final name = _cleanEntityName(rawName);
-          final timeStr = params['time'] ?? 'NOW';
-          final eventDateTime = _resolveEventDateTime(timeStr, now);
-          final eventTimeOfDay = TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
+      // 2. Food Registration Tag
+      final foodMatch = RegExp(
+              r'\[REGISTER_FOOD\|food=([^|]+)\|mealType=([^|]+)\|time=([^\]]+)\]')
+          .firstMatch(rawReply);
+      if (foodMatch != null) {
+        final food = _cleanEntityName(foodMatch.group(1)!);
+        final mealType = _normalizeMealType(foodMatch.group(2)!);
+        final timeStr = foodMatch.group(3)!.trim();
+        final eventDateTime = _resolveEventDateTime(timeStr, now);
+        final eventTimeOfDay =
+            TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
 
-          await _firebaseService.addMedicationTask(name, eventDateTime, eventTimeOfDay, false);
-          return _RegistrationResult(executed: true, cleanReply: rawReply);
-        } else if (tagType == 'REGISTER_FOOD') {
-          final rawFood = params['food'] ?? params['name'] ?? params['item'] ?? 'Alimento';
-          final food = _cleanEntityName(rawFood);
-          final rawMealType = params['mealType'] ?? params['meal'] ?? food;
-          final timeStr = params['time'] ?? 'NOW';
-          final eventDateTime = _resolveEventDateTime(timeStr, now);
-          final eventTimeOfDay = TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
-          final mealType = _normalizeMealType(rawMealType, timeOfDay: eventTimeOfDay, fullPrompt: rawReply);
+        await _firebaseService.logFoodHabit(
+            food, mealType, eventDateTime, eventTimeOfDay);
+        return _RegistrationResult(executed: true, cleanReply: rawReply);
+      }
 
-          await _firebaseService.logFoodHabit(food, mealType, eventDateTime, eventTimeOfDay);
-          return _RegistrationResult(executed: true, cleanReply: rawReply);
-        } else if (tagType == 'REGISTER_ACTIVITY') {
-          final rawActivity = params['activityType'] ?? params['activity'] ?? params['name'] ?? 'Ejercicio';
-          final activityType = _cleanEntityName(rawActivity);
-          final duration = int.tryParse(params['duration'] ?? '15') ?? 15;
-          final intensity = _normalizeIntensity(params['intensity'] ?? 'Media');
-          final timeStr = params['time'] ?? 'NOW';
-          final eventDateTime = _resolveEventDateTime(timeStr, now);
-          final eventTimeOfDay = TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
+      // 3. Activity Registration Tag
+      final actMatch = RegExp(
+              r'\[REGISTER_ACTIVITY\|activityType=([^|]+)\|duration=([^|]+)\|intensity=([^|]+)\|time=([^\]]+)\]')
+          .firstMatch(rawReply);
+      if (actMatch != null) {
+        final activityType = _cleanEntityName(actMatch.group(1)!);
+        final duration = int.tryParse(actMatch.group(2)!.trim()) ?? 15;
+        final intensity = _normalizeIntensity(actMatch.group(3)!);
+        final timeStr = actMatch.group(4)!.trim();
+        final eventDateTime = _resolveEventDateTime(timeStr, now);
+        final eventTimeOfDay =
+            TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
 
-          await _firebaseService.logActivityHabit(activityType, duration, intensity, eventDateTime, eventTimeOfDay);
-          return _RegistrationResult(executed: true, cleanReply: rawReply);
-        }
+        await _firebaseService.logActivityHabit(
+            activityType, duration, intensity, eventDateTime, eventTimeOfDay);
+        return _RegistrationResult(executed: true, cleanReply: rawReply);
       }
     } catch (_) {}
 
@@ -362,6 +482,23 @@ Mensaje del usuario: "$cleanPrompt"
       _pendingContext = null;
       return 'Operación cancelada. No se realizó ningún registro.';
     }
+
+    // Privacy toggle commands
+    if (lower.contains('perfil privado') || lower.contains('perfil privada') ||
+        lower.contains('haz privado') || lower.contains('hazlo privado') ||
+        lower.contains('activa privacidad') || lower.contains('activar privacidad')) {
+      await _firebaseService.updatePrivacy(false);
+      return 'Tu perfil ahora es privado. [ACTION:PRIVACY_PRIVATE]';
+    }
+    if (lower.contains('perfil público') || lower.contains('perfil publico') ||
+        lower.contains('perfil pública') || lower.contains('perfil publica') ||
+        lower.contains('haz público') || lower.contains('haz publico') ||
+        lower.contains('hazlo público') || lower.contains('hazlo publico') ||
+        lower.contains('activa público') || lower.contains('activar público')) {
+      await _firebaseService.updatePrivacy(true);
+      return 'Tu perfil ahora es público. [ACTION:PRIVACY_PUBLIC]';
+    }
+
 
     // Step 1: User indicates category intent without item name
     if (lower.contains('quiero registrar una comida') || lower.contains('registra un alimento') || lower == 'registra una comida' || lower == 'registra comida') {
@@ -445,62 +582,34 @@ Mensaje del usuario: "$cleanPrompt"
       return 'Registré la toma de $itemName a las $formattedTime. [ACTION:OPEN_MEDICATION]';
     }
 
-    if (lower.contains('comí') ||
-        lower.contains('comi') ||
-        lower.contains('desayuné') ||
-        lower.contains('desayune') ||
-        lower.contains('almorcé') ||
-        lower.contains('almorce') ||
-        lower.contains('cené') ||
-        lower.contains('cene') ||
-        lower.contains('desayuno') ||
-        lower.contains('almuerzo') ||
-        lower.contains('cena') ||
-        lower.contains('merienda') ||
-        lower.contains('comida') ||
-        lower.contains('alimento') ||
-        lower.contains('arroz')) {
+    if (lower.contains('comí') || lower.contains('comi') || lower.contains('desayuné') || lower.contains('almorcé') || lower.contains('cené') || lower.contains('arroz')) {
       final foodName = _cleanEntityName(prompt);
+      final mealType = _normalizeMealType(prompt);
       final explicitTime = _extractExplicitTimeFromPrompt(prompt);
-      final initialMealType = _normalizeMealType(prompt, fullPrompt: prompt);
 
       if (explicitTime == null) {
-        _pendingContext = PendingVoiceContext(
-          category: 'food',
-          step: StepState.itemNameExtracted,
-          itemName: foodName,
-          mealType: initialMealType,
-        );
-        return '¿A qué hora comiste $foodName? [ACTION:OPEN_HABITS_FOOD]';
+        _pendingContext = PendingVoiceContext(category: 'food', step: StepState.itemNameExtracted, itemName: foodName, mealType: mealType);
+        return '¿A qué hora comiste $foodName?';
       }
 
       final eventDateTime = _resolveEventDateTime(explicitTime, now);
       final timeOfDay = TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
       final formattedTime = _formatTimeDisplay(timeOfDay);
-      final finalMealType = _normalizeMealType(initialMealType, timeOfDay: timeOfDay, fullPrompt: prompt);
 
-      await _firebaseService.logFoodHabit(foodName, finalMealType, eventDateTime, timeOfDay);
+      await _firebaseService.logFoodHabit(foodName, mealType, eventDateTime, timeOfDay);
       _pendingContext = null;
-      return 'Registré tu $finalMealType ($foodName) a las $formattedTime. [ACTION:OPEN_HABITS_FOOD]';
+      return 'Registré $foodName a las $formattedTime. [ACTION:OPEN_HABITS_FOOD]';
     }
 
-    if (lower.contains('caminata') ||
-        lower.contains('ejercicio') ||
-        lower.contains('estiramiento') ||
-        lower.contains('yoga') ||
-        lower.contains('pilates') ||
-        lower.contains('gimnasia') ||
-        lower.contains('natacion') ||
-        lower.contains('natación') ||
-        lower.contains('bici') ||
-        lower.contains('hice') ||
-        lower.contains('practiqué') ||
-        lower.contains('practique') ||
-        lower.contains('realicé') ||
-        lower.contains('realice')) {
+    if (lower.contains('caminata') || lower.contains('ejercicio') || lower.contains('estiramiento')) {
       final activity = _cleanEntityName(prompt);
       final duration = _extractDurationMinutes(prompt) ?? 30;
-      final explicitTime = _extractExplicitTimeFromPrompt(prompt) ?? 'NOW';
+      final explicitTime = _extractExplicitTimeFromPrompt(prompt);
+
+      if (explicitTime == null) {
+        _pendingContext = PendingVoiceContext(category: 'activity', step: StepState.itemNameExtracted, itemName: activity, durationMinutes: duration);
+        return '¿A qué hora realizaste la $activity?';
+      }
 
       final eventDateTime = _resolveEventDateTime(explicitTime, now);
       final timeOfDay = TimeOfDay(hour: eventDateTime.hour, minute: eventDateTime.minute);
@@ -508,7 +617,7 @@ Mensaje del usuario: "$cleanPrompt"
 
       await _firebaseService.logActivityHabit(activity, duration, 'Media', eventDateTime, timeOfDay);
       _pendingContext = null;
-      return 'Registré tu $activity a las $formattedTime. [ACTION:OPEN_HABITS_ACTIVITY]';
+      return 'Registré tu $activity de $duration minutos a las $formattedTime. [ACTION:OPEN_HABITS_ACTIVITY]';
     }
 
     return null;
@@ -535,9 +644,9 @@ Mensaje del usuario: "$cleanPrompt"
   String _cleanEntityName(String raw) {
     var s = raw.trim();
 
-    // 1. Remove leading conversational noise, verbs, meal prefixes, politeness, category words, and articles
+    // Remove leading conversational noise, verbs, politeness, and articles
     final leadingNoise = RegExp(
-      r'^(hola|por favor|buenas|buenos días|buenas tardes|porfa|me gustaría|quisiera|quiero|necesito|puedes|registra mi desayuno de|registra mi desayuno|registra mi almuerzo de|registra mi almuerzo|registra mi cena de|registra mi cena|registra mi comida de|registra mi comida|registra mi alimento de|registra mi alimento|registra que|registra|registrar|desayuné|desayune|almorcé|almorce|cené|cene|me tomé|me tome|ya tomé|ya tome|tomé|tome|tomar|me comí|me comi|ya comí|ya comi|comí|comi|comer|hice|hacer|fui a|fui|realicé|realice|acabo de|mi desayuno de|mi desayuno|mi almuerzo de|mi almuerzo|mi cena de|mi cena|mi comida de|mi comida|mi alimento de|mi alimento|desayuno de|desayuno|almuerzo de|almuerzo|cena de|cena|merienda de|merienda|mi|mis|el|la|los|las|un|una|unos|unas|medicamento|alimento|comida|ejercicio|actividad|pastilla de|pastillas de|pastilla|pastillas|medicina de|medicina|remedio de|remedio|dosis de|dosis|toma de|toma|clase de|sesión de|sesion de|de)\s+',
+      r'^(hola|por favor|buenas|buenos días|buenas tardes|porfa|me gustaría|quisiera|quiero|necesito|puedes|registra que|registra|registrar|me tomé|me tome|ya tomé|ya tome|tomé|tome|tomar|me comí|me comi|ya comí|ya comi|comí|comi|comer|hice|hacer|fui a|fui|realicé|realice|acabo de|mi|mis|el|la|los|las|un|una|unos|unas|medicamento|alimento|comida|ejercicio|actividad|de)\s+',
       caseSensitive: false,
     );
 
@@ -545,24 +654,13 @@ Mensaje del usuario: "$cleanPrompt"
       s = s.replaceAll(leadingNoise, '').trim();
     }
 
-    // 2. Remove trailing time phrases, hour numbers, or noise
-    final trailingTimeNoise = RegExp(
-      r'\s+(ahorita|recien|recién|hoy|ayer|hace un momento|hace un rato|a las? \d+.*|\d{1,2}\s*(de la mañana|de la tarde|de la noche|am|pm|a\.m\.|p\.m\.|de la madrugada)?|\d{1,2}\s*hs?|\d{1,2}\s*horas?)$',
-      caseSensitive: false,
-    );
-
-    while (trailingTimeNoise.hasMatch(s)) {
-      s = s.replaceAll(trailingTimeNoise, '').trim();
-    }
-
+    // Remove trailing time phrases or noise
+    s = s.replaceAll(RegExp(r'\s+(ahorita|recien|recién|hoy|ayer|hace un momento|a las \d+.*)$', caseSensitive: false), '').trim();
     s = s.replaceAll(RegExp(r'[.,;:!?]+$'), '').trim();
-
-    // 3. Remove standalone category suffixes (e.g. "Cereal de desayuno" -> "Cereal")
-    s = s.replaceAll(RegExp(r'\s+de\s+(desayuno|almuerzo|cena|merienda)$', caseSensitive: false), '').trim();
 
     if (s.isEmpty) return raw.trim();
 
-    // Capitalize first letter while preserving multi-word phrases (e.g. "Doble hexa", "Seco de pollo")
+    // Capitalize first letter while preserving multi-word phrases (e.g. "Arroz con pollo")
     return s[0].toUpperCase() + s.substring(1);
   }
 
@@ -641,23 +739,13 @@ Mensaje del usuario: "$cleanPrompt"
     }
   }
 
-  String _normalizeMealType(String raw, {TimeOfDay? timeOfDay, String? fullPrompt}) {
-    final combined = '${raw.toLowerCase()} ${(fullPrompt ?? '').toLowerCase()}';
-
-    if (combined.contains('desayun') || combined.contains('mañana')) return 'Desayuno';
-    if (combined.contains('almorz') || combined.contains('almuerzo') || combined.contains('comida')) return 'Almuerzo';
-    if (combined.contains('cen') || combined.contains('noche')) return 'Cena';
-    if (combined.contains('meriend') || combined.contains('snack')) return 'Merienda';
-
-    if (timeOfDay != null) {
-      final h = timeOfDay.hour;
-      if (h >= 5 && h <= 11) return 'Desayuno';
-      if (h > 11 && h <= 16) return 'Almuerzo';
-      if (h > 16 && h <= 18) return 'Merienda';
-      return 'Cena';
-    }
-
-    return 'Desayuno';
+  String _normalizeMealType(String raw) {
+    final lower = raw.toLowerCase();
+    if (lower.contains('desayuno')) return 'Desayuno';
+    if (lower.contains('almuerzo') || lower.contains('comida')) return 'Almuerzo';
+    if (lower.contains('cena')) return 'Cena';
+    if (lower.contains('merienda') || lower.contains('snack')) return 'Merienda';
+    return 'Almuerzo';
   }
 
   String _normalizeIntensity(String raw) {
@@ -673,7 +761,29 @@ Mensaje del usuario: "$cleanPrompt"
     bool containsAny(List<String> keywords) =>
         keywords.any((k) => lower.contains(k));
 
-    if (containsAny(['medicamento', 'medicina', 'remedio', 'pastilla', 'dosis', 'fármaco', 'farmaco'])) {
+    // --- Privacy toggle ---
+    if (containsAny(['perfil privado', 'perfil privada', 'haz privado',
+                     'hazlo privado', 'activa privacidad', 'perfil publico',
+                     'perfil publica', 'haz publico', 'hazlo publico'])) {
+      if (containsAny(['privado', 'privada'])) return AppVoiceAction.togglePrivacyPrivate;
+      if (containsAny(['publico', 'publica'])) return AppVoiceAction.togglePrivacyPublic;
+    }
+
+    // --- Specific companion name mentioned ---
+    final companionName = _extractCompanionName(lower);
+    if (companionName != null) {
+      return AppVoiceAction.openCompanionProfile;
+    }
+
+    // --- Specific group name mentioned ---
+    final groupName = _matchKnownName(lower, knownGroupNames);
+    if (groupName != null) return AppVoiceAction.openCommunityGroup;
+
+    // --- Specific lesson title mentioned ---
+    final lessonName = _matchKnownName(lower, knownLessonTitles);
+    if (lessonName != null) return AppVoiceAction.openCommunityLesson;
+
+    if (containsAny(['medicamento', 'medicina', 'remedio', 'pastilla', 'dosis', 'farmaco', 'fármaco'])) {
       return AppVoiceAction.openMedication;
     }
     if (containsAny(['temblor', 'gráfica', 'grafica', 'monitoreo', 'sensor', 'medir'])) {
@@ -685,9 +795,21 @@ Mensaje del usuario: "$cleanPrompt"
     if (containsAny(['hábito', 'habito', 'comida', 'alimentación', 'alimentacion', 'dieta'])) {
       return AppVoiceAction.openHabitsFood;
     }
-    if (containsAny(['comunidad', 'grupo', 'compañero', 'compañeros', 'lección', 'leccion'])) {
+
+    // --- Community subsections ---
+    if (containsAny(['lección', 'leccion'])) {
+      return AppVoiceAction.openCommunityLessons;
+    }
+    if (containsAny(['grupo', 'grupos'])) {
+      return AppVoiceAction.openCommunityGroups;
+    }
+    if (containsAny(['compañero', 'companero'])) {
+      return AppVoiceAction.openCommunityCompanions;
+    }
+    if (containsAny(['comunidad', 'comunidad parkinson'])) {
       return AppVoiceAction.openCommunity;
     }
+
     if (containsAny(['perfil', 'médico', 'medico', 'especialista', 'mi cuenta'])) {
       return AppVoiceAction.openProfile;
     }
@@ -695,7 +817,55 @@ Mensaje del usuario: "$cleanPrompt"
     return AppVoiceAction.none;
   }
 
-  String _getFallbackResponse(String prompt, AppVoiceAction action) {
+  /// Extracts a companion first-name from the prompt when a known name is
+  /// detected (case-insensitive).  Returns the cleaned display name.
+  String? _extractCompanionName(String lowerPrompt) {
+    for (final name in knownCompanionFirstNames) {
+      if (lowerPrompt.contains(name)) {
+        return name[0].toUpperCase() + name.substring(1);
+      }
+    }
+    final match = RegExp(
+      r'(?:perfil de|compañero|companeros?|conoce a|conoce) '
+      r'(?:a )?([A-ZÁÉÍÓÚÑ][\w\s]+)',
+    ).firstMatch(lowerPrompt);
+    if (match != null) {
+      return _cleanEntityName(match.group(1)!);
+    }
+    return null;
+  }
+
+  /// Returns the canonical known name found in [lowerPrompt], or null.
+  String? _matchKnownName(String lowerPrompt, List<String> knownNames) {
+    for (final name in knownNames) {
+      if (lowerPrompt.contains(name)) return name;
+    }
+    return null;
+  }
+
+  /// Extracts the community target name from the user prompt based on
+  /// the detected action.  Returns the cleaned name or null.
+  String? _extractCommunityTargetName(String prompt, AppVoiceAction action) {
+    final lower = prompt.toLowerCase();
+    if (action == AppVoiceAction.openCompanionProfile ||
+        action == AppVoiceAction.openCommunityCompanions) {
+      return _extractCompanionName(lower);
+    }
+    if (action == AppVoiceAction.openCommunityGroup ||
+        action == AppVoiceAction.openCommunityGroups) {
+      final matched = _matchKnownName(lower, knownGroupNames);
+      if (matched != null) return _cleanEntityName(matched);
+    }
+    if (action == AppVoiceAction.openCommunityLesson ||
+        action == AppVoiceAction.openCommunityLessons) {
+      final matched = _matchKnownName(lower, knownLessonTitles);
+      if (matched != null) return _cleanEntityName(matched);
+    }
+    return null;
+  }
+
+
+  String _getFallbackResponse(String prompt, AppVoiceAction action, [String? targetName]) {
     switch (action) {
       case AppVoiceAction.openMedication:
         return 'Con gusto, abriendo la sección de medicamentos.';
@@ -708,6 +878,22 @@ Mensaje del usuario: "$cleanPrompt"
         return 'Entendido, te llevo a la sección de actividad física.';
       case AppVoiceAction.openCommunity:
         return 'Por supuesto, abriendo la sección de comunidad.';
+      case AppVoiceAction.openCommunityCompanions:
+        return 'Claro, abriendo la pestaña de compañeros en Comunidad Parkinson.';
+      case AppVoiceAction.openCommunityGroups:
+        return 'Entendido, abriendo la pestaña de grupos en Comunidad Parkinson.';
+      case AppVoiceAction.openCommunityLessons:
+        return 'Por supuesto, abriendo la pestaña de lecciones en Comunidad Parkinson.';
+      case AppVoiceAction.openCompanionProfile:
+        return 'Abriendo el perfil de ${targetName ?? 'tu compañero'}.';
+      case AppVoiceAction.openCommunityGroup:
+        return 'Abriendo el grupo ${targetName ?? 'de la comunidad'}.';
+      case AppVoiceAction.openCommunityLesson:
+        return 'Abriendo la lección: ${targetName ?? 'de la comunidad'}.';
+      case AppVoiceAction.togglePrivacyPrivate:
+        return 'Tu perfil ahora es privado.';
+      case AppVoiceAction.togglePrivacyPublic:
+        return 'Tu perfil ahora es público.';
       case AppVoiceAction.openProfile:
         return 'Abriendo tu perfil personal.';
       case AppVoiceAction.none:

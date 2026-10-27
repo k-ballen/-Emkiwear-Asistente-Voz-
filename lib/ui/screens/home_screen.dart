@@ -262,11 +262,11 @@ class _AssistantModalState extends State<AssistantModal> {
     });
 
     if (response.action != AppVoiceAction.none) {
-      _navigateToTargetSection(response.action);
+      _navigateToTargetSection(response.action, response.targetName);
     }
   }
 
-  void _navigateToTargetSection(AppVoiceAction action) {
+  void _navigateToTargetSection(AppVoiceAction action, [String? targetName]) {
     if (!mounted) return;
 
     Widget targetScreen;
@@ -287,6 +287,37 @@ class _AssistantModalState extends State<AssistantModal> {
       case AppVoiceAction.openCommunity:
         targetScreen = const CommunityScreen();
         break;
+      case AppVoiceAction.openCommunityCompanions:
+        targetScreen = const CommunityScreen(initialTabIndex: 0);
+        break;
+      case AppVoiceAction.openCommunityGroups:
+        targetScreen = const CommunityScreen(initialTabIndex: 1);
+        break;
+      case AppVoiceAction.openCommunityLessons:
+        targetScreen = const CommunityScreen(initialTabIndex: 2);
+        break;
+      case AppVoiceAction.openCompanionProfile:
+        targetScreen = CommunityScreen(
+          initialTabIndex: 0,
+          companionName: targetName,
+        );
+        break;
+      case AppVoiceAction.openCommunityGroup:
+        targetScreen = CommunityScreen(
+          initialTabIndex: 1,
+          groupName: targetName,
+        );
+        break;
+      case AppVoiceAction.openCommunityLesson:
+        targetScreen = CommunityScreen(
+          initialTabIndex: 2,
+          lessonTitle: targetName,
+        );
+        break;
+      case AppVoiceAction.togglePrivacyPrivate:
+      case AppVoiceAction.togglePrivacyPublic:
+        // Privacy toggle is executed inside processPrompt; no navigation needed
+        return;
       case AppVoiceAction.openProfile:
         targetScreen = const ProfileScreen();
         break;
@@ -294,8 +325,9 @@ class _AssistantModalState extends State<AssistantModal> {
         return;
     }
 
-    // Push the target screen onto the Navigator stack without popping or disposing
-    // the AssistantModal. This preserves the TTS audio speech without cutting off.
+    // Push the target screen without popping the assistant modal.
+    // This allows the user to see the section underneath while the assistant
+    // continues speaking and displaying its reply on top without cutting off.
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => targetScreen),
     );
