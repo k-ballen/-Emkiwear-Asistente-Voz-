@@ -149,6 +149,7 @@ class TremorProvider with ChangeNotifier {
   bool _isDataTimeout = false;
   bool _yaHayResultado = false;
   Timer? _timeoutCheckTimer;
+  int? _lastProcessedTMs;
 
   // Últimos valores válidos de la sesión
   TremorClass? _ultimaClase;
@@ -392,6 +393,14 @@ class TremorProvider with ChangeNotifier {
           _ultimoDesplazamiento = 0.0;
         }
       }
+
+      // Deduplicación t_ms: si tMs es idéntico al último ya procesado,
+      // la conexión está viva (_ultimaActualizacion ya se actualizó), pero NO duplicamos en la línea de tiempo.
+      if (_lastProcessedTMs != null && status.tMs == _lastProcessedTMs) {
+        notifyListeners();
+        return;
+      }
+      _lastProcessedTMs = status.tMs;
 
       _timeline.add(status);
       if (_timeline.length > maxTimeline) _timeline.removeAt(0);

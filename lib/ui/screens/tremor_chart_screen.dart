@@ -266,8 +266,8 @@ class _TremorChartScreenState extends State<TremorChartScreen> {
         ? 0
         : DateTime.now().difference(provider.ultimaActualizacion!).inSeconds;
 
-    final isStale = isDisconnected || elapsedSeconds > 15;
-    final isUpdating = !isDisconnected && elapsedSeconds >= 3 && elapsedSeconds <= 15;
+    final isStale = isDisconnected;
+    final isUpdating = !isDisconnected && elapsedSeconds > 5;
 
     Widget cardChild;
 

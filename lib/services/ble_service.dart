@@ -10,6 +10,11 @@ class BleService {
   BluetoothDevice? _lastDevice;
   String? _lastDeviceId;
 
+  BluetoothCharacteristic? _statusChar;
+  DateTime? _lastStatusPacketTime;
+  int _failedReadCount = 0;
+  Timer? _fallbackReadTimer;
+
   StreamSubscription? _connectionSubscription;
   StreamSubscription? _lastSampleSub;
   StreamSubscription? _lastStatusSub;
@@ -43,6 +48,21 @@ class BleService {
       } catch (_) {}
     }
     _cleanupConnection();
+  }
+
+  Future<bool> subscribeWithRetry(BluetoothCharacteristic char, {int maxRetries = 3}) async {
+    for (int i = 1; i <= maxRetries; i++) {
+      try {
+        await char.setNotifyValue(true);
+        return true;
+      } catch (e) {
+        print("BLE: Error al suscribir a ${char.uuid} (intento $i/$maxRetries): $e");
+        if (i < maxRetries) {
+          await Future.delayed(const Duration(seconds: 1));
+        }
+      }
+    }
+    return false;
   }
 
   Future<void> startScanAndConnect() async {
@@ -138,30 +158,36 @@ class BleService {
           for (var char in service.characteristics) {
             final uuid = char.uuid.toString().toUpperCase();
             if (uuid == TremorRepository.sampleCharUuid) {
-              await char.setNotifyValue(true);
+              await subscribeWithRetry(char);
               _lastSampleSub = char.onValueReceived.listen((value) => repository.decodeSample(value));
             } else if (uuid == TremorRepository.statusCharUuid) {
-              await char.setNotifyValue(true);
-              _lastStatusSub = char.onValueReceived.listen((value) => repository.decodeStatus(value));
+              _statusChar = char;
+              final ok = await subscribeWithRetry(char);
+              if (ok) {
+                print("STATUS suscrito");
+              }
+              _lastStatusSub = char.onValueReceived.listen((value) {
+                _onStatusPacketReceived(value);
+              });
             } else if (uuid == TremorRepository.extCharUuid) {
-              await char.setNotifyValue(true);
+              await subscribeWithRetry(char);
               _lastExtSub = char.onValueReceived.listen((value) => repository.decodeExt(value));
             } else if (uuid == TremorRepository.sevCharUuid) {
               try {
-                await char.setNotifyValue(true);
+                await subscribeWithRetry(char);
                 _lastSevSub = char.onValueReceived.listen((value) => repository.decodeSev(value));
               } catch (e) {
                 print("BLE: Opcional SEV no disponible: $e");
               }
             } else if (uuid == TremorRepository.diagCharUuid) {
               try {
-                await char.setNotifyValue(true);
+                await subscribeWithRetry(char);
                 _lastDiagSub = char.onValueReceived.listen((value) => repository.decodeDiag(value));
               } catch (e) {
                 print("BLE: Opcional DIAG no disponible: $e");
               }
             } else if (uuid == TremorRepository.summaryCharUuid) {
-              await char.setNotifyValue(true);
+              await subscribeWithRetry(char);
               char.onValueReceived.listen((value) async {
                 repository.decodeSummary(value, "actual_user");
                 if (value.length >= 2) {
@@ -170,7 +196,7 @@ class BleService {
                 }
               });
             } else if (uuid == TremorRepository.rawCharUuid) {
-              await char.setNotifyValue(true);
+              await subscribeWithRetry(char);
               _lastRawSub = char.onValueReceived.listen((value) => repository.decodeRawImu(value));
             } else if (uuid == TremorRepository.rawFifoCharUuid) {
               rawFifoChar = char;
@@ -183,7 +209,7 @@ class BleService {
       }
 
       if (cmdChar != null) {
-        await cmdChar.setNotifyValue(true);
+        await subscribeWithRetry(cmdChar);
         cmdChar.onValueReceived.listen((value) {
           final text = utf8.decode(value, allowMalformed: true);
           if (text.startsWith("FW=")) {
@@ -202,9 +228,63 @@ class BleService {
       }
       
       print("BLE: Suscripciones iniciales completadas.");
+      _startFallbackReadCheck();
     } catch (e) {
       print("BLE Connection Error: $e");
       _isConnecting = false;
+    }
+  }
+
+  void _onStatusPacketReceived(List<int> value) {
+    _lastStatusPacketTime = DateTime.now();
+    _failedReadCount = 0; // Exitoso, reseteamos fallos
+    repository.decodeStatus(value);
+  }
+
+  void _startFallbackReadCheck() {
+    _fallbackReadTimer?.cancel();
+    _fallbackReadTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (_connectedDevice == null || _statusChar == null) return;
+
+      final now = DateTime.now();
+      final secondsSinceLastStatus = _lastStatusPacketTime == null
+          ? 0
+          : now.difference(_lastStatusPacketTime!).inSeconds;
+
+      // Si estando CONECTADO pasan 2 s sin recibir notificación de STATUS, hacer READ cada 2 s
+      if (secondsSinceLastStatus >= 2 && now.millisecond % 2000 < 1000) {
+        print("BLE: Hace $secondsSinceLastStatus s sin STATUS. Ejecutando READ de respaldo...");
+        try {
+          final value = await _statusChar!.read();
+          if (value.isNotEmpty) {
+            _onStatusPacketReceived(value);
+          } else {
+            _failedReadCount++;
+            print("BLE: READ de STATUS devolvió bytes vacíos (fallo $_failedReadCount/3).");
+          }
+        } catch (e) {
+          _failedReadCount++;
+          print("BLE: READ de STATUS falló ($e) (fallo $_failedReadCount/3).");
+        }
+
+        // Si 3 lecturas seguidas fallan, volver a suscribirse (paso 2)
+        if (_failedReadCount >= 3) {
+          print("BLE: 3 lecturas seguidas fallaron. Re-suscribiendo a STATUS...");
+          _failedReadCount = 0;
+          await _resubscribeStatus();
+        }
+      }
+    });
+  }
+
+  Future<void> _resubscribeStatus() async {
+    if (_statusChar == null) return;
+    try {
+      await _statusChar!.setNotifyValue(false);
+    } catch (_) {}
+    final ok = await subscribeWithRetry(_statusChar!);
+    if (ok) {
+      print("STATUS suscrito");
     }
   }
 
@@ -257,13 +337,14 @@ class BleService {
 
   Future<void> _subscribeToRawFifo(BluetoothCharacteristic char) async {
     print("BLE: Suscribiendo a RAWFIFO...");
-    await char.setNotifyValue(true);
+    await subscribeWithRetry(char);
     _lastRawFifoSub = char.onValueReceived.listen((value) {
       repository.decodeRawFifo(value);
     });
   }
 
   void _cleanupConnection() {
+    _fallbackReadTimer?.cancel();
     _connectionSubscription?.cancel();
     _lastSampleSub?.cancel();
     _lastStatusSub?.cancel();
@@ -272,6 +353,7 @@ class BleService {
     _lastDiagSub?.cancel();
     _lastRawSub?.cancel();
     _lastRawFifoSub?.cancel();
+    _statusChar = null;
     _connectedDevice = null;
     _isConnecting = false;
   }
